@@ -368,19 +368,17 @@ function last24Hours(now) {
   return new Date(now.getTime() - 24 * 60 * 60 * 1000);
 }
 
-app.use('/summership/api', api);
 app.use('/api', api);
 
 if (fs.existsSync(clientDist)) {
-  app.use('/summership', express.static(clientDist));
-  app.get('/summership/*', (_req, res) => res.sendFile(path.join(clientDist, 'index.html')));
-  app.get('/', (_req, res) => res.redirect('/summership/'));
+  app.use(express.static(clientDist));
+  app.get('*', (_req, res) => res.sendFile(path.join(clientDist, 'index.html')));
 } else {
   app.get('*', (_req, res) => res.status(404).send('Build the client first with npm run build.'));
 }
 
 mongoose.connect(MONGO_URI).then(() => {
-  app.listen(PORT, () => console.log(`Summership app running at http://localhost:${PORT}/summership/`));
+  app.listen(PORT, () => console.log(`Spurti app running at http://localhost:${PORT}/`));
 }).catch((error) => {
   console.error(error);
   process.exit(1);

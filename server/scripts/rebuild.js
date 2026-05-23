@@ -16,7 +16,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..', '..');
 const dataDir = path.join(rootDir, 'data');
 const uploadsDir = path.join(dataDir, 'uploads');
-const rosterPath = path.join(dataDir, 'students-start-on-or-before-2026-05-21.csv');
+const rosterPath = path.join(dataDir, 'students-start-on-or-before-2026-05-22.csv');
 
 const SESSIONS = [
   session('15 May Morning', '2026-05-15', 'morning', '2026-05-15T08:27:30', '2026-05-15T12:37:30', 250, '2026-05-15/15_may_attendance_M.csv', '2026-05-15/15-may-morning-chat.txt', '2026-05-15/15 May - orientation poll report - morning.csv'),
@@ -28,7 +28,10 @@ const SESSIONS = [
   session('19 May Morning', '2026-05-19', 'morning', '2026-05-19T09:00:17', '2026-05-19T10:35:17', 95, '2026-05-19/19-05-2026 Attendance.csv', '2026-05-19/chat_19_05_2026.txt', '2026-05-19/poll_91571551447_2026_05_19.csv'),
   session('20 May Morning', '2026-05-20', 'morning', '2026-05-20T09:04:23', '2026-05-20T11:04:39', 121, '2026-05-20/20_May_2026_attendance.csv', '2026-05-20/chat_20_May_2026.txt', '2026-05-20/poll_93235054469_2026_05_20.csv'),
   session('21 May Morning', '2026-05-21', 'morning', '2026-05-21T09:00:00', '2026-05-21T11:00:00', 120, '2026-05-21/21_MAY_ATTENDANCE.csv', '2026-05-21/21_May_Chat.txt', null),
-  session('21 May Followup', '2026-05-21', 'followup', '2026-05-21T11:00:00', '2026-05-21T12:00:00', 60, '2026-05-21/21_MAY_ATTENDANCE2.csv', '2026-05-21/21_May_Chat1.txt', null)
+  session('21 May Followup', '2026-05-21', 'followup', '2026-05-21T11:00:00', '2026-05-21T12:00:00', 60, '2026-05-21/21_MAY_ATTENDANCE2.csv', '2026-05-21/21_May_Chat1.txt', null),
+  session('22 May Morning', '2026-05-22', 'morning', '2026-05-22T09:00:00', '2026-05-22T13:00:00', 240, '2026-05-22/22_may_attendance_morning.csv', null, '2026-05-22/Poll_22_May_Morning.csv'),
+  session('22 May Afternoon', '2026-05-22', 'afternoon', '2026-05-22T14:00:00', '2026-05-22T16:20:00', 140, '2026-05-22/22_may_attendance_afternoon.csv', null, '2026-05-22/Poll_22_May_Afternoon.csv'),
+  session('22 May Evening', '2026-05-22', 'evening', '2026-05-22T16:30:00', '2026-05-22T18:36:50', 127, '2026-05-22/22_may_attendance_evening.csv', null, '2026-05-22/Poll_22_May_Evening.csv')
 ];
 
 const POSITIVE_WORDS = new Set([

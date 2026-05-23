@@ -9,7 +9,12 @@ export const SESSION_LABELS = [
   '17 May Evening',
   '18 May Morning',
   '19 May Morning',
-  '20 May Morning'
+  '20 May Morning',
+  '21 May Morning',
+  '21 May Followup',
+  '22 May Morning',
+  '22 May Afternoon',
+  '22 May Evening'
 ];
 
 export const SESSION_DURATIONS = {
@@ -20,7 +25,12 @@ export const SESSION_DURATIONS = {
   '17 May Evening': 111,
   '18 May Morning': 117,
   '19 May Morning': 95,
-  '20 May Morning': 121
+  '20 May Morning': 121,
+  '21 May Morning': 81,
+  '21 May Followup': 70,
+  '22 May Morning': 240,
+  '22 May Afternoon': 140,
+  '22 May Evening': 127
 };
 
 // Session end times from Zoom CSV headers — used for ordering and onboarding filter
@@ -32,7 +42,12 @@ export const SESSION_DATETIME_MAP = {
   '17 May Evening': '2026-05-17T22:33:56',
   '18 May Morning': '2026-05-18T11:00:14',
   '19 May Morning': '2026-05-19T10:35:17',
-  '20 May Morning': '2026-05-20T11:04:39'
+  '20 May Morning': '2026-05-20T11:04:39',
+  '21 May Morning': '2026-05-21T11:00:00',
+  '21 May Followup': '2026-05-21T12:00:00',
+  '22 May Morning': '2026-05-22T13:00:00',
+  '22 May Afternoon': '2026-05-22T16:20:00',
+  '22 May Evening': '2026-05-22T18:36:50'
 };
 
 // Per-session attendance threshold in MINUTES (null = use 75% of duration)
