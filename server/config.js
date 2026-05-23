@@ -1,5 +1,5 @@
 export const PORT = Number(process.env.PORT || 5290);
-export const MONGO_URI = process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/analysis_summership';
+export const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/sakshi_spurti';
 
 export const SESSION_LABELS = [
   '15 May Morning',
