@@ -1,4 +1,4 @@
-export const PORT = Number(process.env.PORT || 5290);
+export const PORT = Number(process.env.PORT || 5003);
 export const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/sakshi_spurti';
 
 export const SESSION_LABELS = [
