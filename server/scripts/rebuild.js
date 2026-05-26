@@ -17,7 +17,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..', '..');
 const dataDir = path.join(rootDir, 'data');
 const uploadsDir = path.join(dataDir, 'uploads');
-const rosterPath = path.join(dataDir, 'students-start-on-or-before-2026-05-22.csv');
+const rosterPath = path.join(dataDir, 'students-start-on-or-before-2026-05-25.csv');
 
 const SESSIONS = [
   session('15 May Morning', '2026-05-15', 'morning', '2026-05-15T08:27:30', '2026-05-15T12:37:30', 250, '2026-05-15/15_may_attendance_M.csv', '2026-05-15/15-may-morning-chat.txt', '2026-05-15/15 May - orientation poll report - morning.csv'),
@@ -247,7 +247,7 @@ async function run() {
   await mongoose.connect(MONGO_URI);
 
   await Promise.all([
-    Student.deleteMany({}),
+    // Student.deleteMany({}), // SKIPPED - students already seeded
     Session.deleteMany({}),
     AttendanceRecord.deleteMany({}),
     ChatRecord.deleteMany({}),
@@ -258,7 +258,7 @@ async function run() {
   ]);
 
   const roster = parseRoster();
-  await Student.insertMany(roster);
+  // await Student.insertMany(roster); // SKIPPED - students already seeded
   const students = await Student.find().sort({ name: 1 });
   const byEmail = new Map();
   const byAltEmail = new Map();
