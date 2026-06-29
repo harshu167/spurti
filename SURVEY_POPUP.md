@@ -25,8 +25,13 @@ SURVEY_ENABLED=1
 SURVEY_FORM_URL=https://docs.google.com/forms/d/e/XXXX/viewform
 SURVEY_EMAIL_ENTRY=entry.1234567890          # from the form's "Get pre-filled link"
 SURVEY_ENFORCEMENT=hard                       # 'soft' to allow "Maybe later"
+SURVEY_DEADLINE=2026-06-30T23:59:59+05:30     # auto-off after this; empty = never
 SURVEY_WEBHOOK_SECRET=<a long random string>
 ```
+
+Once a student submits, `surveyCompleted` is stored on their record, so the modal
+never shows for them again (any future login). After `SURVEY_DEADLINE`, `/api/config`
+reports the survey off and **all** students see normal Spurti — no redeploy needed.
 
 Get `SURVEY_EMAIL_ENTRY`: in the Form, ⋮ → **Get pre-filled link**, type a dummy
 email, **Get link** — the copied URL contains `entry.<id>=dummy`. Use that `entry.<id>`.

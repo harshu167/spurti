@@ -29,8 +29,21 @@ const SURVEY = {
   // Mandatory survey: 'hard' = blocking modal the student cannot dismiss until
   // they submit. No SP reward — participation is required, not incentivised.
   enforcement: process.env.SURVEY_ENFORCEMENT || 'hard',
+  // Auto-expiry. After this instant the modal stops showing (normal Spurti
+  // resumes) with no redeploy. ISO 8601 incl. offset, e.g. 2026-06-30T23:59:59+05:30.
+  deadline: process.env.SURVEY_DEADLINE || '',
   webhookSecret: process.env.SURVEY_WEBHOOK_SECRET || '' // shared secret for the Apps Script webhook
 };
+
+// The survey is active only while enabled AND before its deadline (if set).
+function surveyActive() {
+  if (!SURVEY.enabled) return false;
+  if (SURVEY.deadline) {
+    const cutoff = Date.parse(SURVEY.deadline);
+    if (!Number.isNaN(cutoff) && Date.now() > cutoff) return false;
+  }
+  return true;
+}
 
 const app = express();
 const api = express.Router();
@@ -200,10 +213,11 @@ api.get('/health', (_req, res) => res.json({ status: 'ok' }));
 api.get('/config', (_req, res) => res.json({
   allowStudentSearch: ALLOW_STUDENT_SEARCH,
   survey: {
-    enabled: SURVEY.enabled,
+    enabled: surveyActive(),
     formUrl: SURVEY.formUrl,
     emailEntryId: SURVEY.emailEntryId,
-    enforcement: SURVEY.enforcement
+    enforcement: SURVEY.enforcement,
+    deadline: SURVEY.deadline
   }
 }));
 
