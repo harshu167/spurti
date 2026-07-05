@@ -16,6 +16,9 @@ import SPTransaction from './models/SPTransaction.js';
 import SessionEvent from './models/SessionEvent.js';
 import ChatSPReview from './models/ChatSPReview.js';
 import investmentEventRouter from './routes/investmentEvent.js';
+import contestRouter from './routes/contest.js';
+import aiConfigRouter from './routes/aiConfig.js';
+import missionsRouter from './routes/missions.js';
 import { recalculateStudentSp } from './scripts/lib/ingestion.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -102,6 +105,15 @@ function studentFromCookie(req) {
   const cookies = parseCookies(req.headers.cookie || '');
   return verifySignedToken(cookies[STUDENT_COOKIE]);
 }
+
+// Populate req.spurtiStudent from the signed cookie on every request so
+// downstream routers (contest, investment-event, future modules) can
+// authenticate without each one re-parsing cookies.
+app.use((req, _res, next) => {
+  const verified = studentFromCookie(req);
+  if (verified) req.spurtiStudent = verified;
+  next();
+});
 
 async function rankFor(email) {
   const student = await Student.findOne({ email }).lean();
@@ -565,6 +577,12 @@ function last24Hours(now) {
 app.use('/api', api);
 app.use('/spurti/api', api);
 app.use('/spurti/api/investment-event', investmentEventRouter);
+app.use('/spurti/api/contest', contestRouter);
+app.use('/api/contest', contestRouter);
+app.use('/spurti/api/ai-config', aiConfigRouter);
+app.use('/api/ai-config', aiConfigRouter);
+app.use('/spurti/api/missions', missionsRouter);
+app.use('/api/missions', missionsRouter);
 app.get('/spurti/auth', authHandoff);
 
 if (fs.existsSync(clientDist)) {
