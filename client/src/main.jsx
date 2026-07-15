@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
@@ -67,7 +67,25 @@ function App() {
     return <main className="page login-page"><section className="panel auth-card"><p className="eyebrow">Spurti</p><h1>Loading</h1></section></main>;
   }
   if (view === 'student' && profile) {
-    return <StudentView profile={profile} onBack={config.allowStudentSearch ? () => setView('landing') : null} />;
+    return (
+      <>
+        <StudentView profile={profile} onBack={config.allowStudentSearch ? () => setView('landing') : null} />
+        <SurveyModal
+          survey={config.survey}
+          student={profile.student}
+          statusPath="/survey/status"
+          completedKey="surveyCompleted"
+          onDone={() => setProfile(prev => ({ ...prev, student: { ...prev.student, surveyCompleted: true } }))}
+        />
+        <SurveyModal
+          survey={config.poll2}
+          student={profile.student}
+          statusPath="/poll2/status"
+          completedKey="poll2Completed"
+          onDone={() => setProfile(prev => ({ ...prev, student: { ...prev.student, poll2Completed: true } }))}
+        />
+      </>
+    );
   }
   if (view === 'excused' && excused) {
     return <ExcusedView data={excused} onBack={config.allowStudentSearch ? () => setView('landing') : null} />;
@@ -102,8 +120,8 @@ function Landing({ config, onStudent }) {
           <h1>Spurti Points track participation energy.</h1>
           <p className="lead">Spurti Points are a simple learning currency for showing up, participating, and staying engaged through the internship.</p>
           <div className="info-grid">
-            <Info title="What is it?" text="A motivation signal that reflects attendance, poll participation, and useful chat engagement." />
-            <Info title="How to get points" text="Attend eligible sessions, answer polls, and contribute positive or useful messages in the meeting chat." />
+            <Info title="What is it?" text="A motivation signal that reflects attendance and poll participation." />
+            <Info title="How to get points" text="Attend eligible sessions and answer polls to keep your engagement visible." />
             <Info title="Motive" text="To make consistency visible and help the cohort build disciplined learning habits." />
           </div>
           {config.allowStudentSearch ? (
@@ -259,25 +277,83 @@ function StudentView({ profile, onBack }) {
         </div>
         <div className="score-card"><span>SP</span><strong>{student.totalSp}</strong><em>Rank {student.rank} of {student.cohortSize}</em></div>
       </header>
+      <LevelStatus student={student} />
       <StudentPulse profile={profile} badges={badges} nextActions={nextActions} />
-      <Tabs tab={tab} setTab={setTab} tabs={[['bank','SP Bank'], ['chats','Chats'], ['polls','Polls'], ['leaderboard','Top 50'], ['event','🏛️ Event'], ['contest','🏆 Contests'], ['missions','🎯 Missions']]} />
+      <Tabs tab={tab} setTab={setTab} tabs={[['bank','SP Bank'], ['polls','Polls'], ['leaderboard','Leaderboard'], ['contest','🏆 Contests'], ['missions','🎯 Missions']]} />
       {tab === 'bank' && <SpBank transactions={profile.transactions} />}
-      {tab === 'chats' && <Chats chats={profile.chats} />}
       {tab === 'polls' && <Polls polls={profile.polls} />}
-      {tab === 'leaderboard' && <Leaderboard rows={profile.leaderboard} />}
-      {tab === 'event' && <InvestmentEventTab email={profile.student.email} profile={profile} />}
+      {tab === 'leaderboard' && <LeaderboardTabs overall={profile.leaderboard} group={profile.groupLeaderboard} groupLabel={student.leaderboardGroupLabel} />}
       {tab === 'contest' && <StudentContestTab email={profile.student.email} />}
       {tab === 'missions' && <StudentMissionsTab email={profile.student.email} />}
     </main>
   );
 }
 
+function LevelStatus({ student }) {
+  const tier = String(student.trophyLeague || 'Bronze').split(' ')[0].toLowerCase();
+  return (
+    <section className="level-status">
+      <div className="level-tiles">
+        <div className="level-tile">
+          <span>Level</span>
+          <strong>{student.level}</strong>
+          <em>lifetime achievement</em>
+        </div>
+        <div className={`level-tile league tier-${tier}`}>
+          <span>Trophy League</span>
+          <strong>{student.trophyLeague}</strong>
+          <em>current performance</em>
+        </div>
+        <div className="level-tile">
+          <span>Legend Badge</span>
+          <strong>{student.legendBadgeUnlocked ? '🏅 Unlocked' : '🔒 Locked'}</strong>
+          <em>reach 1500 SP once</em>
+        </div>
+        <div className="level-tile">
+          <span>Onboarding Group</span>
+          <strong className="group">{student.leaderboardGroupLabel || '—'}</strong>
+          <em>biweekly cohort</em>
+        </div>
+      </div>
+      <p className="level-note">
+        Level shows your highest achievement and never decreases. Trophy League shows your current performance and can move up or down with your current Spurti Points.
+        {student.legendBadgeUnlocked ? ' You have unlocked the Legend Badge by reaching 1500 Spurti Points at least once.' : ''}
+      </p>
+    </section>
+  );
+}
+
+function LeaderboardTabs({ overall = [], group = [], groupLabel }) {
+  const [type, setType] = useState('overall');
+  const rows = type === 'overall' ? overall : group;
+  return (
+    <section className="panel">
+      <div className="panel-head">
+        <h2>Leaderboard</h2>
+        <select value={type} onChange={e => setType(e.target.value)}>
+          <option value="overall">Overall Leaderboard</option>
+          <option value="my_onboarding_group">My Onboarding Group</option>
+        </select>
+      </div>
+      {type === 'my_onboarding_group' && groupLabel &&
+        <p className="muted">Showing students onboarded in your group: {groupLabel}</p>}
+      <table className="table">
+        <thead><tr><th>Rank</th><th>Name</th><th>Email</th><th>Level</th><th>SP</th></tr></thead>
+        <tbody>{rows.map(row => (
+          <tr key={`${row.rank}-${row.maskedEmail}`} className={row.isCurrentStudent ? 'current-student' : ''}>
+            <td>{row.rank}</td><td>{row.name}</td><td>{row.maskedEmail}</td><td>{row.level}</td><td>{row.totalSp}</td>
+          </tr>
+        ))}</tbody>
+      </table>
+    </section>
+  );
+}
+
 function StudentPulse({ profile, badges, nextActions }) {
-  const { student, cohort, attendance, polls, chats, transactions } = profile;
+  const { student, cohort, attendance, polls, transactions } = profile;
   const qualified = attendance.filter(a => a.qualified).length;
   const pollAttempted = polls.reduce((sum, p) => sum + p.attemptedQuestions, 0);
   const pollTotal = polls.reduce((sum, p) => sum + p.totalQuestions, 0);
-  const positiveChats = chats.filter(c => c.overallSentiment === 'positive').length;
   const trend = transactions.map(tx => ({ label: tx.sessionLabel || 'Start', value: tx.balanceAfter }));
   return (
     <section className="pulse-grid">
@@ -301,7 +377,6 @@ function StudentPulse({ profile, badges, nextActions }) {
         <div className="compare-list">
           <b>{qualified}/{attendance.length} attendance qualified</b>
           <b>{pollAttempted}/{pollTotal} polls attempted</b>
-          <b>{positiveChats}/{chats.length} positive chat sessions</b>
         </div>
       </div>
       <div className="pulse-card">
@@ -339,11 +414,9 @@ function buildBadges(profile) {
   const qualifiedPct = profile.attendance.length ? profile.attendance.filter(a => a.qualified).length / profile.attendance.length : 0;
   const pollAttempted = profile.polls.reduce((sum, p) => sum + p.attemptedQuestions, 0);
   const pollTotal = profile.polls.reduce((sum, p) => sum + p.totalQuestions, 0);
-  const positiveChats = profile.chats.filter(c => c.overallSentiment === 'positive').length;
   if (profile.student.rank <= 50) badges.push('Top 50');
   if (qualifiedPct >= 0.75) badges.push('Consistent Attendee');
   if (pollTotal && pollAttempted / pollTotal >= 0.75) badges.push('Poll Champion');
-  if (positiveChats >= 3) badges.push('Positive Contributor');
   if (profile.student.totalSp >= profile.cohort.averageSp) badges.push('Above Average');
   return badges.length ? badges : ['Getting Started'];
 }
@@ -353,7 +426,6 @@ function buildNextActions(profile) {
   if (profile.cohort.pointsToTop50 > 0) actions.push(`Earn ${profile.cohort.pointsToTop50} more SP to enter Top 50.`);
   if (profile.attendance.some(a => !a.qualified)) actions.push('Attend at least 75% of upcoming sessions to avoid attendance debit.');
   if (profile.polls.some(p => p.missedQuestions > 0)) actions.push('Attempt every poll question to avoid poll debit.');
-  if (!profile.chats.length) actions.push('Add useful meeting chat contributions to create a positive chat record.');
   actions.push('Check your SP Bank after each session to understand every credit and debit.');
   return actions.slice(0, 4);
 }
@@ -382,57 +454,39 @@ function SpBank({ transactions }) {
   );
 }
 
-function Chats({ chats }) {
-  const [open, setOpen] = useState('');
-  if (!chats.length) return <section className="panel empty">No chat records found.</section>;
-  return (
-    <section className="panel">
-      <h2>Chats</h2>
-      <div className="cards">
-        {chats.map(chat => (
-          <article className="card" key={chat._id}>
-            <button className="card-head" onClick={() => setOpen(open === chat.sessionLabel ? '' : chat.sessionLabel)}>
-              <strong>{chat.sessionLabel}</strong>
-              <span className={chat.overallSentiment}>{chat.overallSentiment}</span>
-            </button>
-            {open === chat.sessionLabel && (
-              <div className="message-list">
-                {chat.messages.map((msg, i) => (
-                  <div className="message" key={i}>
-                    <span>{msg.time}</span>
-                    <p>{msg.message}</p>
-                    <b className={msg.sentiment}>{msg.sentiment === 'positive' ? '+' : msg.sentiment === 'negative' ? '-' : '0'}</b>
-                  </div>
-                ))}
-              </div>
-            )}
-          </article>
-        ))}
-      </div>
-    </section>
-  );
+const POLL_MONTHS = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+const POLL_TOD = { morning: 0, afternoon: 1, evening: 2 };
+
+// Session labels come in two formats — "15 May Morning" and "Day 10 (26 May)".
+// Parse the real session date (+ time-of-day) into a comparable number so we can
+// sort chronologically; unknown labels sort last. Higher = more recent.
+function pollSortKey(label = '') {
+  let day, mon;
+  const paren = label.match(/\((\d{1,2})\s+([A-Za-z]+)\)/);
+  if (paren) { day = +paren[1]; mon = paren[2]; }
+  else {
+    const lead = label.match(/^(\d{1,2})\s+([A-Za-z]+)/);
+    if (lead) { day = +lead[1]; mon = lead[2]; }
+  }
+  const m = mon ? POLL_MONTHS[mon.slice(0, 3).toLowerCase()] : undefined;
+  if (m === undefined || !day) return -1;
+  const todMatch = label.toLowerCase().match(/morning|afternoon|evening/);
+  const tod = todMatch ? POLL_TOD[todMatch[0]] : 0;
+  return ((m * 100 + day) * 10) + tod;
 }
 
 function Polls({ polls }) {
   if (!polls.length) return <section className="panel empty">No poll records found.</section>;
+  const sorted = [...polls].sort((a, b) => pollSortKey(b.sessionLabel) - pollSortKey(a.sessionLabel));
   return (
     <section className="panel">
       <h2>Polls</h2>
       <div className="cards">
-        {polls.map(poll => (
+        {sorted.map(poll => (
           <article className="card" key={poll._id}>
             <div className="card-head static">
               <strong>{poll.sessionLabel}</strong>
               <span>{poll.attemptedQuestions}/{poll.totalQuestions} attempted</span>
-            </div>
-            <div className="poll-responses">
-              {poll.responses.map((item, i) => (
-                <div key={i} className={item.attempted ? 'attempted' : 'missed'}>
-                  <span>{item.pollName}</span>
-                  <p>{item.question}</p>
-                  <b>{item.response || 'Not attempted'}</b>
-                </div>
-              ))}
             </div>
           </article>
         ))}
@@ -460,7 +514,6 @@ function AdminView({ admin, auth, onBack }) {
   const [attendance, setAttendance] = useState(null);
   const [active, setActive] = useState([]);
   const [analytics, setAnalytics] = useState(null);
-  const [spReviews, setSpReviews] = useState([]);
   const [stats, setStats] = useState(null);
   const [studentProfile, setStudentProfile] = useState(null);
 
@@ -498,22 +551,6 @@ function AdminView({ admin, auth, onBack }) {
     const res = await fetch(`${API}/admin/analytics`, { headers });
     setAnalytics(await res.json());
   };
-  const loadSpReviews = async () => {
-    const res = await fetch(`${API}/admin/chat-sp-reviews?status=pending`, { headers });
-    setSpReviews(await res.json());
-  };
-  const reviewAction = async (id, action) => {
-    const res = await fetch(`${API}/admin/chat-sp-reviews/${id}/${action}`, {
-      method: 'POST',
-      headers: { ...headers, 'Content-Type': 'application/json' },
-      body: JSON.stringify({})
-    });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      alert(data.error || 'Review action failed.');
-    }
-    await loadSpReviews();
-  };
 
   useEffect(() => { loadLeaderboard(50); fetchStats(); }, []);
   const fetchStats = async () => {
@@ -529,7 +566,6 @@ function AdminView({ admin, auth, onBack }) {
       return () => clearInterval(id);
     }
     if (tab === 'analytics' && !analytics) loadAnalytics();
-    if (tab === 'sp-review' && !spReviews.length) loadSpReviews();
   }, [tab]);
 
   return (
@@ -539,7 +575,8 @@ function AdminView({ admin, auth, onBack }) {
         <div><p className="eyebrow">Admin Dashboard</p><h1>Spurti Control Room</h1></div>
         <div className="score-card"><span>Yet to onboard</span><strong>{stats?.yetToOnboard ?? admin.yetToOnboard ?? 0}</strong><span className="divider">|</span><span>Active</span><strong>{stats?.activeStudents ?? admin.activeStudents ?? admin.students ?? 0}</strong><span className="divider">|</span><span>Excused</span><strong>{stats?.excusedStudents ?? admin.excusedStudents ?? 0}</strong><em>{stats?.transactions ?? admin.transactions ?? 0} txns</em></div>
       </header>
-      <Tabs tab={tab} setTab={setTab} tabs={[['leaderboard','Leaderboard'], ['attendance','Attendance'], ['sp-review','SP Review'], ['live','Live'], ['analytics','Analytics'], ['students','Students'], ['investment','🏛️ Investment'], ['contest-mgr','🏆 Contests'], ['missions-mgr','🎯 Missions']]} />
+
+      <Tabs tab={tab} setTab={setTab} tabs={[['leaderboard','Leaderboard'], ['attendance','Attendance'], ['live','Live'], ['analytics','Analytics'], ['students','Students'], ['contest-mgr','🏆 Contests'], ['missions-mgr','🎯 Missions']]} />
       {tab === 'leaderboard' && (
         <section className="panel">
           <div className="panel-head">
@@ -556,49 +593,14 @@ function AdminView({ admin, auth, onBack }) {
         </section>
       )}
       {tab === 'attendance' && <AdminAttendance data={attendance} onStudent={loadStudent} />}
-      {tab === 'sp-review' && <ChatSPReviewTable reviews={spReviews} onAction={reviewAction} onRefresh={loadSpReviews} />}
       {tab === 'live' && <LiveAnalytics active={active} />}
       {tab === 'analytics' && <Analytics data={analytics} />}
       {tab === 'students' && <AllStudentsPanel stats={stats} onStudent={loadStudent} auth={auth} />}
-      {tab === 'investment' && <InvestmentAdminPanel headers={headers} />}
       {tab === 'contest-mgr' && <ContestAdminPanel headers={headers} />}
       {tab === 'missions-mgr' && <MissionAdminPanel headers={headers} />}
+
       {studentProfile && <div className="overlay"><section className="modal wide"><div className="modal-head"><h2>{studentProfile.student.name}</h2><button className="icon" onClick={() => setStudentProfile(null)}>x</button></div><SpBank transactions={studentProfile.transactions} /></section></div>}
     </main>
-  );
-}
-
-function ChatSPReviewTable({ reviews, onAction, onRefresh }) {
-  return (
-    <section className="panel">
-      <div className="panel-head">
-        <h2>Chat SP Review</h2>
-        <button className="secondary" onClick={onRefresh}>Refresh</button>
-      </div>
-      {!reviews.length ? <p className="empty">No pending chat SP reviews.</p> : (
-        <div className="matrix-wrap">
-          <table className="table review-table">
-            <thead><tr><th>Time</th><th>Student</th><th>SP</th><th>Issued by</th><th>Reason</th><th>Confidence</th><th>Action</th></tr></thead>
-            <tbody>{reviews.map(review => (
-              <tr key={review._id}>
-                <td>{new Date(review.dateTime).toLocaleString()}</td>
-                <td><strong>{review.studentName || 'Unmatched'}</strong><span>{review.studentEmail || 'No email match'}</span></td>
-                <td className={review.delta > 0 ? 'credit' : 'debit'}>{review.displayDelta || (review.delta > 0 ? `+${review.delta}` : review.delta)}</td>
-                <td>{review.issuedByName}</td>
-                <td><p>{review.reason}</p><em>{review.evidenceText}</em></td>
-                <td>{review.confidence}</td>
-                <td>
-                  <div className="review-actions">
-                    <button className="primary" disabled={!review.studentEmail} onClick={() => onAction(review._id, 'accept')}>Accept</button>
-                    <button className="secondary" onClick={() => onAction(review._id, 'reject')}>Reject</button>
-                  </div>
-                </td>
-              </tr>
-            ))}</tbody>
-          </table>
-        </div>
-      )}
-    </section>
   );
 }
 
@@ -777,503 +779,79 @@ function AllStudentsPanel({ stats, onStudent, auth }) {
   );
 }
 
-// ═══════════════════════════════════════════
-// INVESTMENT EVENT — STUDENT VIEW
-// ═══════════════════════════════════════════
 
-function InvestmentEventTab({ email, profile }) {
-  const [eventData, setEventData] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [myTeam, setMyTeam] = useState(null);
-  const [isLeader, setIsLeader] = useState(false);
-  const [wallet, setWallet] = useState(null);
-  const [investments, setInvestments] = useState([]);
-  const [subTab, setSubTab] = useState('market');
-  const [investModal, setInvestModal] = useState(null); // project being invested in
-  const [investAmount, setInvestAmount] = useState('');
-  const [investComment, setInvestComment] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [submitMsg, setSubmitMsg] = useState('');
+function SurveyModal({ survey, student, onDone, statusPath = '/survey/status', completedKey = 'surveyCompleted' }) {
+  const [checking, setChecking] = useState(false);
+  const [note, setNote] = useState('');
+  const done = useRef(false);
 
+  const enabled = survey?.enabled && survey.formUrl && student && !student[completedKey];
+
+  // Verify against the server. The completion flag is set ONLY by a real Google
+  // submission (Apps Script webhook) or the server-side sheet sync — never by the
+  // client — so clicking "I've submitted" cannot dismiss the modal without a
+  // genuine response on record. showNote=true surfaces feedback for the button.
+  async function verifyStatus(showNote) {
+    if (done.current) return;
+    if (showNote) { setChecking(true); setNote(''); }
+    try {
+      const r = await fetch(`${API}${statusPath}`);
+      if (r.ok && (await r.json()).completed) { done.current = true; onDone(); return; }
+      if (showNote) setNote("We haven't received your response yet. Please make sure you pressed Submit in the form above — this window closes on its own once your response is recorded (it can take a few seconds).");
+    } catch {
+      if (showNote) setNote('Network error — please try again in a moment.');
+    } finally {
+      if (showNote) setChecking(false);
+    }
+  }
+
+  // Poll for completion: the webhook (instant) or sheet sync sets the flag
+  // server-side; this notices and closes the modal without a page reload.
   useEffect(() => {
-    loadEvent();
-  }, []);
+    if (!enabled) return;
+    const id = setInterval(() => verifyStatus(false), 5000);
+    return () => clearInterval(id);
+  }, [enabled]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const loadEvent = async () => {
-    setLoading(true);
-    try {
-      const [evRes, teamRes] = await Promise.all([
-        fetch(`${API}/investment-event/market`),
-        fetch(`${API}/investment-event/my-team`, { headers: { 'x-student-email': email } })
-      ]);
-      const ev = await evRes.json();
-      const team = await teamRes.json();
-      setEventData(ev);
-      setMyTeam(team.team);
-      setIsLeader(team.isLeader);
-      if (ev.projects && team.team) {
-        const wRes = await fetch(`${API}/investment-event/wallet`, { headers: { 'x-student-email': email } });
-        const invRes = await fetch(`${API}/investment-event/my-investments`, { headers: { 'x-student-email': email } });
-        const w = await wRes.json();
-        const inv = await invRes.json();
-        setWallet(w.wallet);
-        setInvestments(inv.investments || []);
-      }
-    } catch (e) {
-      setError(e.message);
-    }
-    setLoading(false);
-  };
+  if (!enabled) return null;
 
-  if (loading) return <section className="panel"><p>Loading event...</p></section>;
-  if (error) return <section className="panel"><p className="error">{error}</p></section>;
-  if (!eventData?.event) return <section className="panel"><p>No active investment event.</p></section>;
+  const hard = survey.enforcement !== 'soft';
+  const email = student.email || '';
+  const sep = survey.formUrl.includes('?') ? '&' : '?';
+  let src = `${survey.formUrl}${sep}embedded=true`;
+  if (survey.emailEntryId && email) {
+    src += `&usp=pp_url&${encodeURIComponent(survey.emailEntryId)}=${encodeURIComponent(email)}`;
+  }
 
-  const { event, projects } = eventData;
-
-  const handleInvest = async () => {
-    if (!investAmount || !investComment.trim()) return;
-    setSubmitting(true);
-    setSubmitMsg('');
-    try {
-      const res = await fetch(`${API}/investment-event/invest`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-student-email': email },
-        body: JSON.stringify({
-          projectId: investModal._id,
-          amount: Number(investAmount),
-          comment: investComment.trim()
-        })
-      });
-      const data = await res.json();
-      if (!res.ok) { setSubmitMsg(data.error || 'Investment failed'); setSubmitting(false); return; }
-      setSubmitMsg('✅ Investment submitted!');
-      setWallet(data.wallet);
-      setInvestments(prev => [data.investment, ...prev]);
-      setTimeout(() => { setInvestModal(null); setInvestAmount(''); setInvestComment(''); setSubmitMsg(''); setSubmitting(false); }, 1500);
-      // Refresh market data
-      const evRes = await fetch(`${API}/investment-event/market`);
-      const ev = await evRes.json();
-      setEventData(ev);
-    } catch (e) {
-      setSubmitMsg('Error: ' + e.message);
-      setSubmitting(false);
-    }
-  };
-
-  const myTeamProjectIds = projects.filter(p => p.teamId === myTeam?._id).map(p => p._id);
+  // After a real submit Google reloads the iframe to its confirmation page; treat
+  // that as a hint to re-check the server (the webhook is the source of truth).
+  function handleIframeLoad() { verifyStatus(false); }
 
   return (
-    <section className="panel">
-      <div className="panel-head">
-        <h2>🏛️ {event.name}</h2>
-        {wallet && (
-          <div className="score-card small">
-            <span>💰 Wallet</span>
-            <strong>{wallet.availableVC} VC</strong>
-            <em>Invested: {wallet.investedVC} VC</em>
-          </div>
-        )}
+    <div className="survey-overlay" role="dialog" aria-modal="true" aria-labelledby="survey-title">
+      <div className="survey-modal">
+        <div className="survey-head">
+          <h2 id="survey-title">One quick step — your feedback is required</h2>
+          <p>
+            Please complete and submit this short survey to continue to your Spurti
+            dashboard. Just answer the questions and press <strong>Submit</strong>.
+            This window closes on its own once we receive your response (it can take
+            a few minutes). <strong>If you skip it, it will reappear.</strong>
+          </p>
+        </div>
+        <iframe title="Spurti feedback survey" src={src} className="survey-frame" onLoad={handleIframeLoad} />
+        <div className="survey-actions">
+          {!hard && <button type="button" className="survey-ghost" onClick={onDone}>Maybe later</button>}
+          <button type="button" className="survey-primary" disabled={checking} onClick={() => verifyStatus(true)}>
+            {checking ? 'Checking…' : "I've submitted — continue"}
+          </button>
+        </div>
+        {note && <p className="survey-note">{note}</p>}
       </div>
-
-      {!isLeader && <p className="muted" style={{marginBottom: '1rem'}}>Only team leaders can invest. Browse the market below.</p>}
-
-      <div className="tab-bar" style={{marginBottom: '1rem'}}>
-        <button className={subTab === 'market' ? 'active' : ''} onClick={() => setSubTab('market')}>📈 Market</button>
-        <button className={subTab === 'mine' ? 'active' : ''} onClick={() => setSubTab('mine')}>📋 My Investments</button>
-        <button className={subTab === 'rules' ? 'active' : ''} onClick={() => setSubTab('rules')}>ℹ️ Rules</button>
-      </div>
-
-      {subTab === 'market' && (
-        <div className="cards">
-          {projects.length === 0 && <p className="empty">No projects registered yet.</p>}
-          {projects.map(p => {
-            const isOwn = myTeamProjectIds.includes(p._id);
-            return (
-              <article className="card" key={p._id}>
-                <div className="card-head static">
-                  <div>
-                    <strong>{p.teamName}</strong>
-                    <p style={{margin:0, color:'#666'}}>{p.projectName}</p>
-                  </div>
-                  <div style={{textAlign:'right'}}>
-                    <span style={{color: p.totalInvestmentReceived > 0 ? '#22c55e' : '#999', fontWeight:700}}>💰 {p.totalInvestmentReceived.toLocaleString()} VC</span>
-                    <p style={{margin:0, color:'#888'}}>{p.investorCount} investor{p.investorCount !== 1 ? 's' : ''}</p>
-                  </div>
-                </div>
-                <div style={{padding: '0.75rem', display:'flex', gap:'0.5rem', justifyContent:'flex-end'}}>
-                  {isOwn
-                    ? <span className="muted" style={{padding:'0.4rem 0.8rem'}}>Your Team</span>
-                    : isLeader
-                      ? <button className="primary small" onClick={() => { setInvestModal(p); setInvestAmount(''); setInvestComment(''); setSubmitMsg(''); }}>💎 Invest</button>
-                      : <span className="muted" style={{padding:'0.4rem 0.8rem'}}>Leader access needed</span>
-                  }
-                </div>
-              </article>
-            );
-          })}
-        </div>
-      )}
-
-      {subTab === 'mine' && (
-        <div>
-          {investments.length === 0 ? <p className="empty">No investments made yet.</p> : (
-            <table className="table">
-              <thead><tr><th>Team</th><th>Project</th><th>Amount</th><th>Comment</th><th>Date</th></tr></thead>
-              <tbody>
-                {investments.map(inv => (
-                  <tr key={inv._id}>
-                    <td>{inv.targetTeamName}</td>
-                    <td>{inv.targetProjectName}</td>
-                    <td><strong style={{color:'#22c55e'}}>{inv.amount} VC</strong></td>
-                    <td style={{maxWidth: '200px', fontSize:'0.85em'}}>{inv.comment}</td>
-                    <td>{new Date(inv.createdAt).toLocaleDateString()}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-      )}
-
-      {subTab === 'rules' && (
-        <div className="panel" style={{background:'#f9f9f9'}}>
-          <h3>📋 Investment Rules</h3>
-          <ul style={{lineHeight:1.8}}>
-            <li>Each team starts with <strong>{event.startingVCPerTeam} VC</strong></li>
-            <li>Minimum investment: <strong>{event.minInvestment} VC</strong> per project</li>
-            <li>Maximum investment: <strong>{event.maxInvestment} VC</strong> per project</li>
-            <li>You can invest in the same project multiple times (amounts add up)</li>
-            <li><strong>Cannot invest in your own team's project</strong></li>
-            <li>You must leave a comment explaining your investment rationale</li>
-            <li>All investments are <strong>public</strong> — the market is transparent</li>
-            <li>At the end, rankings are based on total investment received</li>
-          </ul>
-        </div>
-      )}
-
-      {investModal && (
-        <div className="overlay" onClick={e => e.target === e.currentTarget && setInvestModal(null)}>
-          <section className="modal">
-            <div className="modal-head">
-              <h2>💎 Invest in {investModal.teamName}</h2>
-              <button className="icon" onClick={() => setInvestModal(null)}>x</button>
-            </div>
-            <div style={{marginBottom:'1rem'}}>
-              <p><strong>Project:</strong> {investModal.projectName}</p>
-              <p><strong>Currently Raised:</strong> 💰 {investModal.totalInvestmentReceived.toLocaleString()} VC from {investModal.investorCount} investor(s)</p>
-              {wallet && <p><strong>Your Available:</strong> 💰 {wallet.availableVC} VC</p>}
-            </div>
-            <div style={{marginBottom:'1rem'}}>
-              <label style={{display:'block', marginBottom:'0.5rem', fontWeight:600}}>Amount to Invest (VC)</label>
-              <input type="number" min={event.minInvestment} max={event.maxInvestment} value={investAmount} onChange={e => setInvestAmount(e.target.value)} placeholder={`Min ${event.minInvestment} VC`} style={{width:'100%', padding:'0.5rem', fontSize:'1rem'}} />
-            </div>
-            <div style={{marginBottom:'1rem'}}>
-              <label style={{display:'block', marginBottom:'0.5rem', fontWeight:600}}>Why are you investing in this project? *</label>
-              <textarea value={investComment} onChange={e => setInvestComment(e.target.value)} rows={4} placeholder="What impressed you about this team's project?" style={{width:'100%', padding:'0.5rem', fontSize:'1rem', resize:'vertical'}} />
-            </div>
-            {submitMsg && <p style={{color: submitMsg.includes('✅') ? '#22c55e' : '#ef4444'}}>{submitMsg}</p>}
-            <div style={{display:'flex', gap:'0.5rem', justifyContent:'flex-end'}}>
-              <button className="secondary" onClick={() => setInvestModal(null)}>Cancel</button>
-              <button className="primary" onClick={handleInvest} disabled={submitting || !investAmount || !investComment.trim()}>
-                {submitting ? 'Submitting...' : 'Submit Investment'}
-              </button>
-            </div>
-          </section>
-        </div>
-      )}
-    </section>
+    </div>
   );
 }
 
-// ═══════════════════════════════════════════
-// INVESTMENT EVENT — ADMIN PANEL
-// ═══════════════════════════════════════════
-
-function InvestmentAdminPanel({ headers }) {
-  const [subTab, setSubTab] = useState('teams');
-  const [teams, setTeams] = useState([]);
-  const [events, setEvents] = useState([]);
-  const [projects, setProjects] = useState([]);
-  const [investments, setInvestments] = useState([]);
-  const [wallets, setWallets] = useState([]);
-  const [showAddTeam, setShowAddTeam] = useState(false);
-  const [newTeam, setNewTeam] = useState({ name: '', description: '', members: [] });
-  const [newMemberEmail, setNewMemberEmail] = useState('');
-  const [newMemberName, setNewMemberName] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [msg, setMsg] = useState('');
-
-  useEffect(() => { loadAll(); }, [subTab]);
-
-  const loadAll = async () => {
-    setLoading(true);
-    try {
-      const [tRes, eRes] = await Promise.all([
-        fetch(`${API}/investment-event/admin/teams`, { headers }),
-        fetch(`${API}/investment-event/admin/events`, { headers })
-      ]);
-      setTeams(await tRes.json());
-      const evs = await eRes.json();
-      setEvents(evs);
-      if (evs.length > 0) {
-        const activeEv = evs.find(e => e.isActive);
-        if (activeEv) {
-          const [projRes, invRes, walRes] = await Promise.all([
-            fetch(`${API}/investment-event/admin/investments?eventId=${activeEv._id}`, { headers }),
-            fetch(`${API}/investment-event/market`, { headers }),
-            fetch(`${API}/investment-event/admin/wallets?eventId=${activeEv._id}`, { headers })
-          ]);
-          const invData = await invRes.json();
-          setProjects(invData.projects || []);
-          setInvestments(await invRes.json());
-          setWallets(await walRes.json());
-        }
-      }
-    } catch (e) { setMsg('Error: ' + e.message); }
-    setLoading(false);
-  };
-
-  const createTeam = async () => {
-    if (!newTeam.name.trim()) return;
-    const res = await fetch(`${API}/investment-event/admin/teams`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...headers },
-      body: JSON.stringify(newTeam)
-    });
-    const data = await res.json();
-    if (!res.ok) { setMsg(data.error); return; }
-    setTeams(prev => [...prev, data]);
-    setShowAddTeam(false);
-    setNewTeam({ name: '', description: '', members: [] });
-    setMsg('Team created!');
-  };
-
-  const addMemberToNew = () => {
-    if (!newMemberEmail.trim() || !newMemberName.trim()) return;
-    setNewTeam(prev => ({
-      ...prev,
-      members: [...prev.members, { email: newMemberEmail.toLowerCase(), name: newMemberName, isLeader: prev.members.length === 0 }]
-    }));
-    setNewMemberEmail('');
-    setNewMemberName('');
-  };
-
-  const deleteTeam = async (id) => {
-    if (!confirm('Delete this team?')) return;
-    await fetch(`${API}/investment-event/admin/teams/${id}`, { method: 'DELETE', headers });
-    setTeams(prev => prev.filter(t => t._id !== id));
-  };
-
-  const createEvent = async () => {
-    const res = await fetch(`${API}/investment-event/admin/events`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...headers },
-      body: JSON.stringify({ name: 'Project Investment', startingVCPerTeam: 1000, minInvestment: 100, maxInvestment: 1000 })
-    });
-    const data = await res.json();
-    if (!res.ok) { setMsg(data.error); return; }
-    setEvents(prev => [...prev, data]);
-    loadAll();
-    setMsg('Event created and activated!');
-  };
-
-  const toggleEvent = async (ev) => {
-    const res = await fetch(`${API}/investment-event/admin/events/${ev._id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', ...headers },
-      body: JSON.stringify({ isActive: !ev.isActive })
-    });
-    if (res.ok) loadAll();
-  };
-
-  const concludeEvent = async (ev) => {
-    if (!confirm('Conclude this event? Trading will close and rankings will be finalized.')) return;
-    const res = await fetch(`${API}/investment-event/admin/conclude/${ev._id}`, { method: 'POST', headers });
-    if (res.ok) { loadAll(); setMsg('Event concluded! Rankings finalized.'); }
-  };
-
-  const activeEvent = events.find(e => e.isActive);
-
-  return (
-    <section className="panel">
-      <div className="panel-head"><h2>🏛️ Investment Event Control</h2></div>
-      <div className="tab-bar" style={{marginBottom:'1rem'}}>
-        <button className={subTab === 'teams' ? 'active' : ''} onClick={() => setSubTab('teams')}>👥 Teams</button>
-        <button className={subTab === 'events' ? 'active' : ''} onClick={() => setSubTab('events')}>📅 Events</button>
-        <button className={subTab === 'projects' ? 'active' : ''} onClick={() => setSubTab('projects')}>💼 Projects</button>
-        <button className={subTab === 'market' ? 'active' : ''} onClick={() => setSubTab('market')}>📊 Market</button>
-        <button className={subTab === 'rankings' ? 'active' : ''} onClick={() => setSubTab('rankings')}>🏆 Rankings</button>
-      </div>
-
-      {msg && <p style={{color: msg.includes('Error') ? '#ef4444' : '#22c55e'}}>{msg}</p>}
-
-      {subTab === 'teams' && (
-        <div>
-          <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'1rem'}}>
-            <p>{teams.length} team{teams.length !== 1 ? 's' : ''}</p>
-            <button className="primary small" onClick={() => setShowAddTeam(true)}>+ Add Team</button>
-          </div>
-          <table className="table">
-            <thead><tr><th>Team</th><th>Leader</th><th>Members</th><th>Actions</th></tr></thead>
-            <tbody>
-              {teams.map(t => {
-                const leader = t.members?.find(m => m.isLeader);
-                return (
-                  <tr key={t._id}>
-                    <td><strong>{t.name}</strong></td>
-                    <td>{leader?.name || '—'}<br/><span className="muted">{leader?.email}</span></td>
-                    <td>{t.members?.length || 0} / 10</td>
-                    <td><button className="secondary small" onClick={() => deleteTeam(t._id)}>Delete</button></td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-
-      {subTab === 'events' && (
-        <div>
-          <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'1rem'}}>
-            <p>{events.length} event{events.length !== 1 ? 's' : ''}</p>
-            <button className="primary small" onClick={createEvent}>+ Create Event</button>
-          </div>
-          {events.map(ev => (
-            <article key={ev._id} className="card" style={{marginBottom:'0.75rem'}}>
-              <div className="card-head static">
-                <div>
-                  <strong>{ev.name}</strong>
-                  <p style={{margin:0, color:'#666'}}>{ev.description || 'No description'}</p>
-                </div>
-                <div style={{textAlign:'right'}}>
-                  <span style={{color: ev.isActive ? '#22c55e' : ev.isConcluded ? '#f59e0b' : '#999', fontWeight:700}}>
-                    {ev.isConcluded ? '🏁 Concluded' : ev.isActive ? '🟢 Active' : '⚪ Inactive'}
-                  </span>
-                </div>
-              </div>
-              <div style={{padding:'0.5rem 0.75rem', fontSize:'0.85em', color:'#666'}}>
-                <span>VC/Team: {ev.startingVCPerTeam} | Min: {ev.minInvestment} | Max: {ev.maxInvestment} VC</span>
-              </div>
-              <div style={{padding:'0.5rem 0.75rem', display:'flex', gap:'0.5rem'}}>
-                {!ev.isConcluded && <button className="secondary small" onClick={() => toggleEvent(ev)}>{ev.isActive ? 'Disable' : 'Activate'}</button>}
-                {ev.isActive && !ev.isConcluded && <button className="secondary small" onClick={() => concludeEvent(ev)}>🏁 End & Finalize</button>}
-              </div>
-            </article>
-          ))}
-        </div>
-      )}
-
-      {subTab === 'projects' && (
-        <div>
-          <p style={{marginBottom:'1rem'}}>Projects are created when teams are registered. Admin project creation coming soon.</p>
-          {projects.length > 0 ? (
-            <table className="table">
-              <thead><tr><th>Team</th><th>Project</th><th>Received</th><th>Investors</th></tr></thead>
-              <tbody>
-                {projects.map(p => (
-                  <tr key={p._id}>
-                    <td>{p.teamName}</td>
-                    <td>{p.projectName}</td>
-                    <td>💰 {p.totalInvestmentReceived.toLocaleString()} VC</td>
-                    <td>{p.investorCount}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : <p className="empty">No projects yet. Activate an event and add teams.</p>}
-        </div>
-      )}
-
-      {subTab === 'market' && (
-        <div>
-          {wallets.length > 0 && (
-            <div style={{marginBottom:'1rem'}}>
-              <h3 style={{marginBottom:'0.5rem'}}>💰 Team Wallets</h3>
-              <table className="table">
-                <thead><tr><th>Team</th><th>Total VC</th><th>Invested</th><th>Available</th></tr></thead>
-                <tbody>
-                  {wallets.map(w => (
-                    <tr key={w._id}>
-                      <td>{w.teamName}</td>
-                      <td>{w.totalVC} VC</td>
-                      <td>{w.investedVC} VC</td>
-                      <td style={{color: (w.totalVC - w.investedVC) > 0 ? '#22c55e' : '#ef4444', fontWeight:700}}>{w.totalVC - w.investedVC} VC</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-          <h3 style={{marginBottom:'0.5rem'}}>📊 All Investments</h3>
-          <p className="muted">Total: {Array.isArray(investments) ? investments.length : 0} investments</p>
-        </div>
-      )}
-
-      {subTab === 'rankings' && activeEvent?.rankings?.length > 0 && (
-        <div>
-          <h3 style={{marginBottom:'1rem'}}>🏆 Final Rankings — {activeEvent.name}</h3>
-          <table className="table">
-            <thead><tr><th>Rank</th><th>Team</th><th>Total Received</th><th>Investors</th></tr></thead>
-            <tbody>
-              {activeEvent.rankings.map(r => (
-                <tr key={r.rank}>
-                  <td>{r.rank === 1 ? '🥇' : r.rank === 2 ? '🥈' : r.rank === 3 ? '🥉' : `#${r.rank}`}</td>
-                  <td><strong>{r.teamName}</strong></td>
-                  <td style={{color:'#22c55e', fontWeight:700}}>💰 {r.totalReceived.toLocaleString()} VC</td>
-                  <td>{r.investorCount}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-      {subTab === 'rankings' && (!activeEvent?.rankings || activeEvent.rankings.length === 0) && (
-        <p className="empty">No rankings yet. Conclude the event to generate rankings.</p>
-      )}
-
-      {showAddTeam && (
-        <div className="overlay" onClick={e => e.target === e.currentTarget && setShowAddTeam(false)}>
-          <section className="modal wide">
-            <div className="modal-head">
-              <h2>➕ Add Team</h2>
-              <button className="icon" onClick={() => setShowAddTeam(false)}>x</button>
-            </div>
-            <div style={{marginBottom:'1rem'}}>
-              <label style={{display:'block', marginBottom:'0.25rem', fontWeight:600}}>Team Name *</label>
-              <input value={newTeam.name} onChange={e => setNewTeam(p => ({...p, name: e.target.value}))} placeholder="Alpha Squad" style={{width:'100%', padding:'0.5rem'}} />
-            </div>
-            <div style={{marginBottom:'1rem'}}>
-              <label style={{display:'block', marginBottom:'0.25rem', fontWeight:600}}>Description</label>
-              <input value={newTeam.description} onChange={e => setNewTeam(p => ({...p, description: e.target.value}))} placeholder="Optional" style={{width:'100%', padding:'0.5rem'}} />
-            </div>
-            <div style={{marginBottom:'0.5rem'}}>
-              <h4>Members ({newTeam.members.length}) — first member becomes leader</h4>
-              {newTeam.members.map((m, i) => (
-                <div key={i} style={{display:'flex', gap:'0.5rem', alignItems:'center', marginBottom:'0.25rem'}}>
-                  <span style={{color: m.isLeader ? '#22c55e' : '#999'}}>{m.isLeader ? '👑' : '👤'}</span>
-                  <span><strong>{m.name}</strong> ({m.email})</span>
-                  {!m.isLeader && <button className="secondary small" onClick={() => setNewTeam(p => ({...p, members: p.members.map((x, j) => j === i ? {...x, isLeader: true} : {...x, isLeader: false})}))}>Make Leader</button>}
-                  <button className="secondary small" onClick={() => setNewTeam(p => ({...p, members: p.members.filter((_, j) => j !== i)}))}>Remove</button>
-                </div>
-              ))}
-            </div>
-            <div style={{display:'flex', gap:'0.5rem', marginBottom:'0.5rem'}}>
-              <input value={newMemberName} onChange={e => setNewMemberName(e.target.value)} placeholder="Student Name" style={{flex:1, padding:'0.5rem'}} />
-              <input value={newMemberEmail} onChange={e => setNewMemberEmail(e.target.value)} placeholder="email@example.com" style={{flex:1, padding:'0.5rem'}} />
-              <button className="secondary" onClick={addMemberToNew}>Add</button>
-            </div>
-            <div style={{display:'flex', gap:'0.5rem', justifyContent:'flex-end', marginTop:'1rem'}}>
-              <button className="secondary" onClick={() => setShowAddTeam(false)}>Cancel</button>
-              <button className="primary" onClick={createTeam} disabled={!newTeam.name.trim()}>Create Team</button>
-            </div>
-          </section>
-        </div>
-      )}
-    </section>
-  );
-}
 // ═══════════════════════════════════════════
 // CONTEST — AI CONFIG PANEL
 // ═══════════════════════════════════════════
@@ -2542,5 +2120,7 @@ function MissionAdminPanel({ headers }) {
     </section>
   );
 }
+=======
+>>>>>>> upstream/main
 
 createRoot(document.getElementById('root')).render(<App />);

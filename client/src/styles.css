@@ -192,6 +192,40 @@ input[type="radio"], input[type="checkbox"] {
   padding: 20px;
   margin-bottom: 18px;
 }
+/* Spurti Levels & Trophy Leagues */
+.level-status {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  padding: 16px;
+  margin-bottom: 18px;
+}
+.level-tiles {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+.level-tile {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: #fafdff;
+}
+.level-tile > span { display: block; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+.level-tile > strong { display: block; font-size: 24px; margin: 4px 0 2px; color: var(--primary); }
+.level-tile > strong.group { font-size: 15px; }
+.level-tile > em { display: block; color: var(--muted); font-style: normal; font-size: 12px; }
+.level-tile.league { color: #fff; border: none; }
+.level-tile.league > span, .level-tile.league > strong, .level-tile.league > em { color: #fff; }
+.level-tile.league.tier-bronze   { background: linear-gradient(135deg, #a97142, #cd7f32); }
+.level-tile.league.tier-silver   { background: linear-gradient(135deg, #9aa3ab, #c0c0c0); }
+.level-tile.league.tier-gold     { background: linear-gradient(135deg, #d4a017, #ffd700); }
+.level-tile.league.tier-platinum { background: linear-gradient(135deg, #4aa3a3, #7fdbda); }
+.level-tile.league.tier-diamond  { background: linear-gradient(135deg, #3b82c4, #5fc8f0); }
+.level-tile.league.tier-legend   { background: linear-gradient(135deg, #6d28d9, #c026d3); }
+.level-note { color: var(--muted); font-size: 13px; margin-top: 12px; line-height: 1.5; }
+@media (max-width: 720px) { .level-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .pulse-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -604,3 +638,55 @@ input[type="radio"], input[type="checkbox"] {
   padding: 0 10px;
   font-size: 0.85rem;
 }
+
+/* --- Mandatory survey pop-up ------------------------------------------- */
+.survey-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(15, 23, 42, 0.78);
+  backdrop-filter: blur(3px);
+}
+.survey-modal {
+  display: flex;
+  flex-direction: column;
+  width: min(720px, 100%);
+  max-height: 92vh;
+  overflow: hidden;
+  background: #fff;
+  border-radius: 16px;
+  box-shadow: 0 24px 60px rgba(2, 6, 23, 0.45);
+}
+.survey-head { padding: 20px 24px 12px; }
+.survey-head h2 { margin: 0 0 6px; font-size: 1.2rem; color: #0f172a; }
+.survey-head p { margin: 0; font-size: 0.92rem; line-height: 1.5; color: #475569; }
+.survey-frame {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 52vh;
+  border: 0;
+  border-top: 1px solid #e2e8f0;
+  border-bottom: 1px solid #e2e8f0;
+}
+.survey-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 14px 24px;
+}
+.survey-primary, .survey-ghost {
+  font: inherit;
+  font-weight: 600;
+  padding: 10px 18px;
+  border-radius: 10px;
+  cursor: pointer;
+  border: 1px solid transparent;
+}
+.survey-primary { background: #4f46e5; color: #fff; }
+.survey-primary:disabled { opacity: 0.6; cursor: default; }
+.survey-ghost { background: #fff; color: #475569; border-color: #cbd5e1; }
+.survey-note { margin: 0 24px 16px; font-size: 0.85rem; color: #b91c1c; }

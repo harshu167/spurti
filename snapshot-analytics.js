@@ -3,6 +3,7 @@
  * Computes and stores one AnalyticsSnapshot every 30 minutes.
  * Run via cron: 0,30 * * * * cd /home/sakshi/spurti && node snapshot-analytics.js >> /var/log/snapshot-analytics.log 2>&1
  */
+import 'dotenv/config';
 import mongoose from 'mongoose';
 import Student from './server/models/Student.js';
 import Session from './server/models/Session.js';
@@ -10,7 +11,8 @@ import SPTransaction from './server/models/SPTransaction.js';
 import SessionEvent from './server/models/SessionEvent.js';
 import AnalyticsSnapshot from './server/models/AnalyticsSnapshot.js';
 
-const MONGO_URI = process.env.MONGO_URI || 'mongodb://sakshi:iitropar@127.0.0.1:27017/sakshi_spurti?authSource=sakshi_spurti';
+const MONGO_URI = process.env.MONGO_URI;
+if (!MONGO_URI) { console.error('MONGO_URI not set (expected in .env)'); process.exit(1); }
 
 function compute_sp_distribution(students) {
   const b = { veryNegative: 0, negative: 0, neutral: 0, positive: 0, veryPositive: 0 };
