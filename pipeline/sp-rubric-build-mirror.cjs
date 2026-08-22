@@ -123,11 +123,15 @@ const SPA_GOOD = ['approved', 'audit_passed'];
 // Answering only — asking a question earns nothing.
 const QUERY_UNIT = 5, QUERY_CAP = 200;   // +5 SP / distinct query, cap 200 → max 40 queries
 const QUERY_BAD_ACTIONS = ['rejected', 'marked_unworthy'];
-// Penalty for admin-disapproved answers, FORWARD-ONLY from the announcement date:
-// verdicts dated before QUERY_PEN_START earn nothing but cost nothing (the rule was
-// not announced when they landed). Gate on the VERDICT date (peer.review.at), not the
-// answer date, so the unreviewed backlog is covered once admins reach it.
-const QUERY_PEN_START = '2026-08-21';
+// Penalty for admin-disapproved answers, FORWARD-ONLY — gated on when the QUERY was
+// RAISED (createdAt), not on the verdict date. Answers to queries that entered the
+// system before this date earn nothing when disapproved but never cost anything,
+// however late the admin reviews them; only answers to NEW queries carry the risk.
+// (Team decision 22 Aug: an admin swept 80 old-query verdicts the day the rule
+// launched, which the original verdict-date gate would have penalized — old-query
+// answers were given under the old no-penalty rules, so the query's entry date is
+// the honest boundary.)
+const QUERY_PEN_QUERY_START = '2026-08-22';
 const QUERY_PEN = { rejected: 10, marked_unworthy: 5 };
 const QUERY_PEN_CAP = 200;               // penalties stop accruing at -200 per student
 
@@ -363,7 +367,7 @@ const dayLabel = (topic) => { const m = String(topic).match(/Day\s+([IVXLC0-9]+)
       uidToEmail.set(String(r.userId), String(r.email).toLowerCase().trim());
   }
   const queryByCanon = new Map(); // canon -> [YYYY-MM-DD ...] (one per distinct query answered)
-  const queryPenByCanon = new Map(); // canon -> [{date, action}] penalizable verdicts (on/after QUERY_PEN_START)
+  const queryPenByCanon = new Map(); // canon -> [{date, action}] penalizable verdicts (query raised on/after QUERY_PEN_QUERY_START)
   for (const q of await sak.collection('act_query_reviews').find(
         { 'peer.submittedAnswerHistory.0': { $exists: true } },
         { projection: { userId: 1, createdAt: 1, updatedAt: 1, 'peer.submittedAnswerHistory': 1, 'peer.answer.submittedAt': 1, 'peer.review.action': 1, 'peer.review.at': 1 } }).toArray()) {
@@ -371,7 +375,8 @@ const dayLabel = (topic) => { const m = String(topic).match(/Day\s+([IVXLC0-9]+)
     const action = q.peer?.review?.action;
     if (QUERY_BAD_ACTIONS.includes(action)) { // admin-flagged bad answer earns nothing
       const penDate = dstr(q.peer?.review?.at);
-      if (penDate && penDate >= QUERY_PEN_START) {
+      const qRaised = dstr(q.createdAt);
+      if (penDate && qRaised && qRaised >= QUERY_PEN_QUERY_START) {
         const seen = new Set();
         for (let uid of (q.peer.submittedAnswerHistory || [])) {
           uid = String(uid); if (uid === askerId || seen.has(uid)) continue; seen.add(uid);
