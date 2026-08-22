@@ -118,8 +118,10 @@ const SPA_GOOD = ['approved', 'audit_passed'];
 // ── Query answering → SP (Pattern A: rubric-recomputed) ──────────────────────
 // +5 SP per DISTINCT peer query a student answered (from
 // act_query_reviews.peer.submittedAnswerHistory), self-answers excluded.
-// Anti-farming: answers the admin REJECTED or MARKED_UNWORTHY earn nothing
-// (unreviewed + approved still count), and total query SP is capped per student.
+// Anti-farming: the +5 is permanent once earned (no clawback on review), but an
+// answer the admin REJECTS (-10) or MARKS UNWORTHY (-5) takes ONE penalty row —
+// only for queries raised on/after QUERY_PEN_QUERY_START. Verdicts settled before
+// QUERY_PAY_STICKY_FROM keep the old no-pay treatment. Total pay capped per student.
 // Answering only — asking a question earns nothing.
 const QUERY_UNIT = 5, QUERY_CAP = 200;   // +5 SP / distinct query, cap 200 → max 40 queries
 const QUERY_BAD_ACTIONS = ['rejected', 'marked_unworthy'];
@@ -132,6 +134,10 @@ const QUERY_BAD_ACTIONS = ['rejected', 'marked_unworthy'];
 // answers were given under the old no-penalty rules, so the query's entry date is
 // the honest boundary.)
 const QUERY_PEN_QUERY_START = '2026-08-22';
+// Verdicts BEFORE this date settled under the old no-pay rule and stay that way;
+// on/after it, pay is sticky (see the query loop). Set to the penalty-launch day
+// so the 21-Aug review sweep withdraws nothing.
+const QUERY_PAY_STICKY_FROM = '2026-08-21';
 const QUERY_PEN = { rejected: 10, marked_unworthy: 5 };
 const QUERY_PEN_CAP = 200;               // penalties stop accruing at -200 per student
 
@@ -373,10 +379,19 @@ const dayLabel = (topic) => { const m = String(topic).match(/Day\s+([IVXLC0-9]+)
         { projection: { userId: 1, createdAt: 1, updatedAt: 1, 'peer.submittedAnswerHistory': 1, 'peer.answer.submittedAt': 1, 'peer.review.action': 1, 'peer.review.at': 1 } }).toArray()) {
     const askerId = String(q.userId);
     const action = q.peer?.review?.action;
-    if (QUERY_BAD_ACTIONS.includes(action)) { // admin-flagged bad answer earns nothing
+    if (QUERY_BAD_ACTIONS.includes(action)) {
       const penDate = dstr(q.peer?.review?.at);
       const qRaised = dstr(q.createdAt);
-      if (penDate && qRaised && qRaised >= QUERY_PEN_QUERY_START) {
+      // Historical reviews (verdict before QUERY_PAY_STICKY_FROM) stand as settled:
+      // the answer never pays and carries no penalty — exactly as balances have
+      // read for weeks. From that date onward the +5, once earned, is PERMANENT
+      // (team decision 22 Aug: no double-charge — a later disapproval never claws
+      // back the pay, it adds exactly one penalty row instead), so the query falls
+      // through to the pay loop below like any other.
+      if (!penDate || penDate < QUERY_PAY_STICKY_FROM) continue;
+      // Single penalty per answer, and only for queries RAISED after the rule
+      // existed — answers to older queries keep their pay and cost nothing.
+      if (qRaised && qRaised >= QUERY_PEN_QUERY_START) {
         const seen = new Set();
         for (let uid of (q.peer.submittedAnswerHistory || [])) {
           uid = String(uid); if (uid === askerId || seen.has(uid)) continue; seen.add(uid);
@@ -386,7 +401,6 @@ const dayLabel = (topic) => { const m = String(topic).match(/Day\s+([IVXLC0-9]+)
           arr.push({ date: penDate, action });
         }
       }
-      continue;
     }
     const date = dstr(q.peer?.answer?.submittedAt) || dstr(q.createdAt) || dstr(q.updatedAt); if (!date) continue;
     const seen = new Set();
@@ -472,19 +486,18 @@ const dayLabel = (topic) => { const m = String(topic).match(/Day\s+([IVXLC0-9]+)
     if (qDates && qDates.length) {
       const qByDay = new Map();
       for (const d of qDates) qByDay.set(d, (qByDay.get(d) || 0) + 1);
-      // ANTI-REFARM: every answer disapproved on/after QUERY_PEN_START permanently
-      // consumes its QUERY_UNIT of the lifetime cap. Without this, a rejection frees
-      // cap room (the answer leaves the good pool) and a maxed-out farmer could cycle
-      // +200 / -200(once) / +200 forever at zero marginal cost.
-      const qCapEff = Math.max(0, QUERY_CAP - (queryPenByCanon.get(cand) || []).length * QUERY_UNIT);
+      // Anti-refarm needs no separate cap burn under sticky pay: a disapproved
+      // answer STAYS in the paid pool, so it already consumes its slice of the
+      // lifetime cap — a maxed farmer whose junk gets flagged eats the penalties
+      // with no cap room ever freed.
       let qUsed = 0;
       for (const d of [...qByDay.keys()].sort()) {
-        if (qUsed >= qCapEff) break;
+        if (qUsed >= QUERY_CAP) break;
         const n = qByDay.get(d);
         let delta = n * QUERY_UNIT;
-        if (qUsed + delta > qCapEff) delta = qCapEff - qUsed;
+        if (qUsed + delta > QUERY_CAP) delta = QUERY_CAP - qUsed;
         qUsed += delta;
-        const capNote = qUsed >= qCapEff ? ` (query SP capped at ${qCapEff})` : '';
+        const capNote = qUsed >= QUERY_CAP ? ` (query SP capped at ${QUERY_CAP})` : '';
         rows.push({ date: d, order: 4, cat: 'query', delta,
           reason: `Query answering (${ddmon(d)}): ${n} peer quer${n === 1 ? 'y' : 'ies'} answered -> +${delta} SP${capNote}.` });
       }
