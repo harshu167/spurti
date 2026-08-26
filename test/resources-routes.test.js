@@ -30,7 +30,7 @@ import { leaderboardGroup } from '../server/services/levels.js';
 import {
   validateCreate, validateStars, bumpResource,
   buildListQuery, buildMineQuery, markDeleted, markRestored,
-  summariseImpact, AUTO_HIDE_REPORTS
+  summariseImpact, AUTO_HIDE_REPORTS, withContextLabel
 } from '../server/services/resources.js';
 import registerResourceRoutes from '../server/routes/resources.js';
 
@@ -104,7 +104,8 @@ function buildApp({ samagamaUrl }) {
   registerResourceRoutes(api, {
     requireStudent, reportRateLimit, leaderboardGroup,
     validateCreate, validateStars, bumpResource, markDeleted, markRestored,
-    buildListQuery, buildMineQuery, summariseImpact, AUTO_HIDE_REPORTS
+    buildListQuery, buildMineQuery, summariseImpact, AUTO_HIDE_REPORTS,
+    withContextLabel
   });
   api.get('/admin/resources', adminGuard, async (req, res) => {
     const incl = String(req.query.deleted || '') === '1';

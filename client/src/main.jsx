@@ -311,6 +311,7 @@ function StudentView({ profile, onBack }) {
         ['journey','My Journey'],
         ...(student.eligibleForVibeGoals ? [['vibe','Commitments']] : []),
         ['spa','SPA Points'],
+        ['resources','Resource Exchange'],
         ...(ach?.visible ? [['achievements','Achievements', unseenAchievements]] : []),
         ['leaderboard','Leaderboard'],
         ['faq','FAQ']]} />
@@ -320,6 +321,7 @@ function StudentView({ profile, onBack }) {
       {tab === 'spa' && <SpaModule student={student} />}
       {tab === 'achievements' && ach?.visible && <AchievementsPanel student={student} data={ach} />}
       {tab === 'leaderboard' && <LeaderboardPanel student={student} />}
+      {tab === 'resources' && <ResourcesPanel student={student} />}
       {tab === 'faq' && <FaqTab />}
     </main>
   );
@@ -2167,3 +2169,307 @@ function SurveyModal({ survey, student, onDone, statusPath = '/survey/status', c
 
 
 createRoot(document.getElementById('root')).render(<App />);
+
+// ---- Resource Exchange ----------------------------------------------------
+// Tier 3 SPA tab. Reuses every existing primitive: .panel / .cards / .card /
+// .overlay / .modal / .muted / .error / .tabs / .tab-badge. NO new design
+// system. NO new state library. NO new api helper — same `${API}/...?email=`
+// fetch pattern as every other tab.
+// ponytail: list is single-fetch with limit=50 (the route's server cap); no
+// infinite scroll, no client-side pagination. Add pagination when 50 isn't
+// enough on real cohorts.
+// ponytail: no toast/notification system; inline `.error` / `.muted` text
+// only, matching the rest of the SPA's status conventions.
+// The card surfaces resource.contextType + contextRef + phase as a single
+// muted meta line — that's how it visually belongs to SPURTHI's existing
+// learning context (plan §1 / §2).
+const R_TYPE_ICON = { link: 'Link', video: 'Video', note: 'Note', code: 'Code' };
+const R_CONTEXT_LABEL = { topic: '', question: '', phase: '' };
+// Each resource row carries a server-computed `contextLabel` (e.g.
+// "#backprop", "Standups", or the poll-question text). The SPA never renders
+// raw contextRef — that would expose ObjectIds to students.
+
+function ResourcesPanel({ student }) {
+  const email = student.email;
+  const [sub, setSub] = useState('discover');
+  const [rows, setRows] = useState(null);
+  const [sort, setSort] = useState('recent');
+  const [q, setQ] = useState('');
+  const [error, setError] = useState(null);
+  const [openRes, setOpenRes] = useState(null);
+  const [showCreate, setShowCreate] = useState(false);
+  const [mine, setMine] = useState(null);
+
+  const load = async () => {
+    setError(null);
+    const url = sub === 'mine'
+      ? `${API}/resources/mine?email=${encodeURIComponent(email)}`
+      : `${API}/resources?sort=${sort}&email=${encodeURIComponent(email)}${q ? `&q=${encodeURIComponent(q)}` : ''}`;
+    try {
+      const r = await fetch(url);
+      const j = await r.json();
+      if (!r.ok) { setError(j.error || 'Failed to load'); return; }
+      if (sub === 'mine') { setMine(j); setRows(j.rows || []); }
+      else setRows(j.rows || []);
+    } catch (e) { setError(e?.message || 'Network error'); }
+  };
+  useEffect(() => { load(); }, [sub, sort, q, email]);
+
+  return (
+    <div className="rx">
+      <section className="panel rx-head">
+        <h2>Resource Exchange</h2>
+        <p className="muted">
+          Resources contribute useful material at the point in the cohort where it is relevant — tagged to a topic, phase, or poll so it is obvious why each is here.
+        </p>
+        <div className="rx-subtabs">
+          <button className={`rx-subtab ${sub === 'discover' ? 'active' : ''}`} onClick={() => setSub('discover')}>Discover</button>
+          <button className={`rx-subtab ${sub === 'mine' ? 'active' : ''}`} onClick={() => setSub('mine')}>My resources</button>
+          <button className="rx-subtab primary" onClick={() => setShowCreate(true)}>Share a resource</button>
+        </div>
+        {sub === 'discover' && (
+          <div className="rx-search">
+            <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search by tag (e.g. backprop, easy)" aria-label="Search resources by tag" />
+            <select value={sort} onChange={e => setSort(e.target.value)} aria-label="Sort resources">
+              <option value="recent">Most recent</option>
+              <option value="saves">Most saved</option>
+              <option value="utility">Most useful</option>
+            </select>
+          </div>
+        )}
+        {error && <p className="error">{error}</p>}
+      </section>
+
+      {sub === 'mine' && mine && (
+        <section className="panel rx-impact">
+          <h3 className="rx-impact-title">Your impact</h3>
+          <div className="rx-impact-tiles">
+            <div><strong>{mine.resources ?? 0}</strong><span>resources shared</span></div>
+            <div><strong>{mine.totalSaves ?? 0}</strong><span>total saves</span></div>
+            <div><strong>{mine.totalRaters ?? 0}</strong><span>ratings received</span></div>
+            <div><strong>{mine.byStatus?.effective ?? 0}</strong><span>marked effective</span></div>
+          </div>
+        </section>
+      )}
+
+      {rows == null ? (
+        <section className="panel"><p className="muted">Loading resources…</p></section>
+      ) : rows.length === 0 ? (
+        <section className="panel empty">
+          <p className="muted">
+            {sub === 'mine'
+              ? "You haven't shared anything yet. Try Share a resource to start."
+              : q
+                ? `Nothing in your cohort matches "${q}". Try a broader tag, or share the first one yourself.`
+                : 'No resources in your cohort yet. Be the first to share.'}
+          </p>
+        </section>
+      ) : (
+        <div className="cards rx-list">
+          {rows.map(r => (
+            <ResourceCard key={r._id} r={r} onOpen={() => setOpenRes(r)} email={email} onChanged={load} />
+          ))}
+        </div>
+      )}
+
+      {openRes && (
+        <ResourceSheet resource={openRes} email={email}
+          onClose={() => setOpenRes(null)} onChanged={() => { load(); setOpenRes(null); }} />
+      )}
+      {showCreate && (
+        <CreateResourceSheet email={email}
+          onClose={() => setShowCreate(false)}
+          onCreated={() => { setShowCreate(false); load(); }} />
+      )}
+    </div>
+  );
+}
+
+// One resource card. Order: title → context (muted, secondary) → description →
+// signals + actions. The context line is the differentiator: it shows the
+// resource's relevance to the cohort (topic tag, phase, or poll question) so
+// the student sees WHY this resource belongs in their feed.
+function ResourceCard({ r, onOpen, email, onChanged }) {
+  const [busy, setBusy] = useState(false);
+  const toggleSave = async (e) => {
+    e.stopPropagation();
+    setBusy(true);
+    try { await fetch(`${API}/resources/${r._id}/save?email=${encodeURIComponent(email)}`, { method: 'POST' }); onChanged(); }
+    finally { setBusy(false); }
+  };
+  const avg = r.ratingCount ? (r.ratingSum / r.ratingCount) : null;
+  const context = r.contextLabel || '';
+  const typeText = R_TYPE_ICON[r.type] || r.type;
+  return (
+    <article className="card rx-card" onClick={onOpen} role="button" tabIndex={0}
+             onKeyDown={e => (e.key === 'Enter' || e.key === ' ') && onOpen()}
+             aria-label={`Open resource: ${r.title}`}>
+      <header className="rx-card-head">
+        <span className="r-type" aria-hidden="true">{typeText}</span>
+        <h3>{r.title}</h3>
+        {r.status && <span className={`rx-status s-${r.status}`} title={`Status: ${r.status}`}>{r.status}</span>}
+      </header>
+      {context && <p className="muted rx-meta">{context}</p>}
+      {r.description && <p className="rx-desc">{r.description.length > 140 ? r.description.slice(0, 137) + '…' : r.description}</p>}
+      <footer className="rx-card-foot">
+        <span className="rx-stats">
+          {avg
+            ? <span title={`${r.ratingCount} ratings`}>{avg.toFixed(1)} avg <em>({r.ratingCount})</em></span>
+            : <span className="muted">no ratings yet</span>}
+          <span className="rx-saved">saved by {r.saveCount ?? 0}</span>
+        </span>
+        <span className="rx-actions" onClick={e => e.stopPropagation()}>
+          <button className="secondary" disabled={busy} onClick={toggleSave} aria-label="Save this resource">
+            {busy ? 'Saving…' : 'Save'}
+          </button>
+          <span className="muted rx-by">by {r.createdBy?.name || 'a student'}</span>
+        </span>
+      </footer>
+    </article>
+  );
+}
+
+// Detail overlay. Same .overlay + .modal + .modal-head pattern as SearchModal,
+// TrajectoryModal, etc. No new chrome.
+function ResourceSheet({ resource: r, email, onClose, onChanged }) {
+  const [stars, setStars] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState('');
+  const context = r.contextLabel || '';
+  const rate = async (n) => {
+    setBusy(true);
+    try {
+      const res = await fetch(`${API}/resources/${r._id}/rate?email=${encodeURIComponent(email)}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ stars: n })
+      });
+      if (res.ok) { setStars(n); setMsg(`Rated ${n} of 5. Thanks for the signal.`); onChanged(); }
+      else { const j = await res.json().catch(() => ({})); setMsg(j.error || 'Could not save your rating.'); }
+    } finally { setBusy(false); }
+  };
+  const report = async () => {
+    setBusy(true);
+    try {
+      const reason = window.prompt('Why are you reporting this resource?') || '';
+      const res = await fetch(`${API}/resources/${r._id}/report?email=${encodeURIComponent(email)}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason })
+      });
+      const j = await res.json().catch(() => ({}));
+      if (res.status === 429) setMsg('You have already reported several resources today. Try again tomorrow.');
+      else if (!res.ok) setMsg(j.error || 'Could not report.');
+      else { setMsg('Reported. The team will review it.'); onChanged(); }
+    } finally { setBusy(false); }
+  };
+  return (
+    <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <section className="modal rx-sheet">
+        <div className="modal-head">
+          <div>
+            <p className="eyebrow">{R_TYPE_ICON[r.type] || r.type}</p>
+            <h2>{r.title}</h2>
+          </div>
+          <button className="icon" onClick={onClose} aria-label="Close resource">x</button>
+        </div>
+        {context && <p className="muted rx-meta">{context}</p>}
+        {r.description && <p className="rx-desc">{r.description}</p>}
+        {r.url && <p><a href={r.url} target="_blank" rel="noopener noreferrer">Open resource</a></p>}
+        <div className="rx-rate">
+          <span className="muted">How useful was this?</span>
+          <div className="rx-stars">
+            {[1, 2, 3, 4, 5].map(n => (
+              <button key={n} className="icon" disabled={busy} onClick={() => rate(n)}
+                      aria-label={`Rate ${n} of 5 stars`}>
+                {n <= stars ? '★' : '☆'}
+              </button>
+            ))}
+            {r.ratingCount ? <span className="muted">avg { (r.ratingSum / r.ratingCount).toFixed(1) } ({r.ratingCount})</span> : null}
+          </div>
+        </div>
+        <div className="rx-sheet-foot">
+          <button className="secondary" onClick={report} disabled={busy} aria-label="Report this resource">Report</button>
+          <span className="muted">by {r.createdBy?.name || 'a student'}</span>
+        </div>
+        {msg && <p className="muted">{msg}</p>}
+      </section>
+    </div>
+  );
+}
+
+// Create form — same shape as VibeGoals' inline section: labels above inputs,
+// error inline, primary submit. Topic context pre-fills because that's the
+// most common case; Tier 4 will pre-fill from the current poll/journey context.
+function CreateResourceSheet({ email, onClose, onCreated }) {
+  const [type, setType] = useState('link');
+  const [url, setUrl] = useState('');
+  const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
+  const [contextType, setContextType] = useState('topic');
+  const [contextRef, setContextRef] = useState('');
+  const [tags, setTags] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+
+  const submit = async () => {
+    setBusy(true); setErr(null);
+    const tagList = tags.split(/[\s,]+/).map(t => t.trim()).filter(Boolean);
+    try {
+      const res = await fetch(`${API}/resources?email=${encodeURIComponent(email)}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type, url: type === 'link' || type === 'video' ? url : '', title, description, contextType, contextRef, tags: tagList })
+      });
+      const j = await res.json();
+      if (!res.ok) setErr(j.error || 'Could not create resource.');
+      else onCreated();
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
+      <section className="modal rx-create">
+        <div className="modal-head">
+          <h2>Share a resource</h2>
+          <button className="icon" onClick={onClose} aria-label="Close share form">x</button>
+        </div>
+        <p className="muted">Help a peer. Resources are publicly visible to your cohort, and indexed by tag, topic, or phase.</p>
+        <div className="rx-form">
+          <label>Type
+            <select value={type} onChange={e => setType(e.target.value)}>
+              <option value="link">Link</option>
+              <option value="video">Video</option>
+              <option value="note">Note</option>
+              <option value="code">Code</option>
+            </select>
+          </label>
+          {(type === 'link' || type === 'video') && (
+            <label>URL<input value={url} onChange={e => setUrl(e.target.value)} placeholder="https://…" /></label>
+          )}
+          <label>Title<input value={title} onChange={e => setTitle(e.target.value)} maxLength={80} placeholder="Backprop explained" /></label>
+          <label>Description<textarea value={description} onChange={e => setDescription(e.target.value)} maxLength={400} rows={3} placeholder="What is this and how does it help?" /></label>
+          <label>Context
+            <select value={contextType} onChange={e => setContextType(e.target.value)} aria-label="Context type">
+              <option value="topic">Topic tag (e.g. backprop)</option>
+              <option value="phase">Phase (standup, vibe, spa, project)</option>
+              <option value="question">Poll question</option>
+            </select>
+          </label>
+          <label>{contextType === 'topic' ? 'Tag' : contextType === 'phase' ? 'Phase key' : 'Poll record id'}
+            <input value={contextRef} onChange={e => setContextRef(e.target.value)}
+                   placeholder={contextType === 'topic' ? 'backprop' : contextType === 'phase' ? 'standup' : 'poll id from samagama'} />
+          </label>
+          <label>Tags (up to 5, space- or comma-separated)
+            <input value={tags} onChange={e => setTags(e.target.value)} placeholder="neural-nets entropy easy" />
+          </label>
+          {err && <p className="error">{err}</p>}
+        </div>
+        <div className="rx-sheet-foot">
+          <button className="secondary" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="primary" onClick={submit} disabled={busy || !title || !contextRef}
+                  aria-label="Share this resource">
+            {busy ? 'Sharing…' : 'Share resource'}
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+}

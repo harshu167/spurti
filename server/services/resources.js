@@ -197,6 +197,43 @@ export function summariseImpact(resources) {
 
 // ── moderation ────────────────────────────────────────────────────────────
 
+// Resource Exchange ---- contextLabel ------------------------------------------
+// Resolve a stored contextRef into a single human-readable string for the SPA.
+// Phase refs (e.g. "standup") become "Standups"; topic refs stay as the tag
+// itself ("backprop"); poll-question refs become the PollRecord's question
+// text up to a length cap. If the poll record was deleted, falls back to
+// "Poll" rather than showing a raw id to students.
+// Pure data → string; callers that need poll lookups pass a fetcher.
+const PHASE_LABELS = { standup: 'Standups', vibe: 'ViBe Goals', spa: 'SPA', project: 'Project' };
+
+export async function buildContextLabel(resource, fetchPollQuestion) {
+  const t = resource.contextType;
+  const ref = String(resource.contextRef || '');
+  if (!ref) return '';
+  if (t === 'topic') return `#${ref}`;
+  if (t === 'phase') return PHASE_LABELS[ref] || ref;
+  if (t === 'question') {
+    try {
+      const q = await fetchPollQuestion(ref);
+      if (!q) return 'Poll';
+      const trimmed = String(q).replace(/\s+/g, ' ').trim();
+      return trimmed.length > 60 ? trimmed.slice(0, 57) + '…' : trimmed;
+    } catch {
+      return 'Poll';
+    }
+  }
+  return ref;
+}
+
+// Helper for the routes: build the label and shallow-clone the resource with
+// the new field added. Used by GET list, GET by id, POST list-with-create.
+// Keep this in the service so the SPA never sees raw ids.
+export async function withContextLabel(resource, fetchPollQuestion) {
+  if (!resource) return resource;
+  const label = await buildContextLabel(resource, fetchPollQuestion);
+  return { ...resource, contextLabel: label };
+}
+
 // Decide whether a new report should auto-hide the resource.
 // ponytail: threshold = 2 distinct reporters. Increase when abuse shows up; this is
 // a knob, not a spec — keep it in code so it's grep-able when the day comes.

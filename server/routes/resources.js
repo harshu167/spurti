@@ -19,6 +19,7 @@ import Resource from '../models/Resource.js';
 import ResourceSave from '../models/ResourceSave.js';
 import ResourceRating from '../models/ResourceRating.js';
 import ResourceReport from '../models/ResourceReport.js';
+import PollRecord from '../models/PollRecord.js';
 
 export default function register(api, ctx) {
   const {
@@ -33,7 +34,8 @@ export default function register(api, ctx) {
     markDeleted,
     markRestored,
     summariseImpact,
-    AUTO_HIDE_REPORTS
+    AUTO_HIDE_REPORTS,
+    withContextLabel
   } = ctx;
 
   api.post('/resources', async (req, res) => {
@@ -63,7 +65,8 @@ export default function register(api, ctx) {
       cohort: leaderboardGroup(c.student.internshipStartDate)
     });
     const rows = await Resource.find(q.filter).sort(q.sort).limit(q.limit).lean();
-    res.json({ rows, total: rows.length });
+    const labelled = await labelRows(rows);
+    res.json({ rows: labelled, total: labelled.length });
   });
 
   api.get('/resources/mine', async (req, res) => {
@@ -71,9 +74,38 @@ export default function register(api, ctx) {
     if (!c) return;
     const q = buildMineQuery(c.email);
     const rows = await Resource.find(q.filter).sort(q.sort).limit(q.limit).lean();
+    const labelled = await labelRows(rows);
     const impact = summariseImpact(rows);
-    res.json({ rows, ...impact });
+    res.json({ rows: labelled, ...impact });
   });
+
+  // ponytail: N+1 avoidance for contextLabel.
+  // Phase/topic refs cost 0 DB calls (string map / prefix). Question refs
+  // are batched into a single PollRecord.find({_id:{$in:[...]}}) so listing
+  // 50 resources with 50 distinct question contexts is O(1) DB calls,
+  // not O(N). The in-process `pollCache` skips re-fetching the same id
+  // across this request (hot topics, etc.) — also O(1) per repeat.
+  const pollCache = new Map();
+  async function labelRows(rows) {
+    const questionIds = Array.from(new Set(
+      rows.filter(r => r.contextType === 'question').map(r => String(r.contextRef))
+    )).filter(id => !pollCache.has(id));
+    if (questionIds.length) {
+      try {
+        const docs = await PollRecord.find(
+          { _id: { $in: questionIds } },
+          { questionText: 1 }
+        ).lean();
+        for (const d of docs) pollCache.set(String(d._id), d.questionText || null);
+        for (const id of questionIds) {
+          if (!pollCache.has(id)) pollCache.set(id, null);   // mark missing so we don't refetch
+        }
+      } catch {
+        for (const id of questionIds) pollCache.set(id, null);
+      }
+    }
+    return Promise.all(rows.map(r => withContextLabel(r, async (id) => pollCache.get(String(id)))));
+  }
 
   api.get('/resources/mine/impact', async (req, res) => {
     const c = await requireStudent(req, res);
@@ -91,7 +123,10 @@ export default function register(api, ctx) {
     if (r.cohort !== leaderboardGroup(c.student.internshipStartDate)) {
       return res.status(404).json({ error: 'Not found' });
     }
-    res.json(r);
+    // Single-row get still goes through labelRows (1 row = 1 question at most),
+    // so the batched path covers it without a special case.
+    const [labelled] = await labelRows([r]);
+    res.json(labelled);
   });
 
   api.post('/resources/:id/save', async (req, res) => {

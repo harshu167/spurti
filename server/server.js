@@ -27,7 +27,7 @@ import { buildStandupState, placeStandup, settleStandupDemo } from './services/s
 import { buildJourneyState, saveJourneyPlan } from './services/journey.js';
 import { buildSpaState } from './services/spa.js';
 import { buildTrajectoryState } from './services/trajectory.js';
-import { AUTO_HIDE_REPORTS, bumpResource, markDeleted, markRestored, summariseImpact, validateCreate, validateStars, buildListQuery, buildMineQuery } from './services/resources.js';
+import { AUTO_HIDE_REPORTS, bumpResource, markDeleted, markRestored, summariseImpact, validateCreate, validateStars, buildListQuery, buildMineQuery, withContextLabel } from './services/resources.js';
 import registerResourceRoutes from './routes/resources.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1239,6 +1239,7 @@ registerResourceRoutes(api, {
   markRestored,
   summariseImpact,
   AUTO_HIDE_REPORTS,
+  withContextLabel,
 });
 
 // ---- Admin moderation -----------------------------------------------------
