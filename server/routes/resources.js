@@ -20,6 +20,7 @@ import ResourceSave from '../models/ResourceSave.js';
 import ResourceRating from '../models/ResourceRating.js';
 import ResourceReport from '../models/ResourceReport.js';
 import PollRecord from '../models/PollRecord.js';
+import { withAudit, appendAudit } from '../services/audit.js';
 
 export default function register(api, ctx) {
   const {
@@ -38,6 +39,11 @@ export default function register(api, ctx) {
     AUTO_HIDE_REPORTS,
     withContextLabel
   } = ctx;
+
+  // Dependency-injection for tests. Production callers (server.js) don't pass
+  // appendAudit and we fall through to the real one from services/audit.js.
+  // Tests inject a throwing stub for the rollback-failure cases.
+  const _appendAudit = ctx.appendAudit || appendAudit;
 
   api.post('/resources', async (req, res) => {
     const c = await requireStudent(req, res);
@@ -218,25 +224,87 @@ export default function register(api, ctx) {
     if (reportRateLimit(c.email)) return res.status(429).json({ error: 'Report rate limit exceeded' });
     const r = await Resource.findOne({ _id: req.params.id });
     if (!r) return res.status(404).json({ error: 'Not found' });
-    let inserted = false;
-    try {
-      await ResourceReport.create({
-        resourceId: r._id, email: c.email,
-        reason: String(req.body?.reason || '').slice(0, 400)
-      });
-      inserted = true;
-    } catch (err) {
-      if (err?.code !== 11000) throw err;
+
+    // Tier 6 commit 2 — the report creation is fail-closed: audit must
+    // succeed or the report is rolled back. The auto-hide that MAY follow
+    // is the asymmetric exception (system actor, no rollback). See the
+    // comment block on the systemPath branch below.
+    const reasonText = String(req.body?.reason || '').slice(0, 400);
+
+    // Step 1: create the report (fail-closed via withAudit).
+    let createdReport = null;
+    const created = await withAudit({
+      rollbackLabel: 'student-report',
+      mutate: async () => {
+        let ins = false;
+        try {
+          createdReport = await ResourceReport.create({
+            resourceId: r._id, email: c.email, reason: reasonText
+          });
+          ins = true;
+        } catch (err) {
+          if (err?.code !== 11000) throw err;   // duplicate report = no-op
+        }
+        return { inserted: ins, report: createdReport };
+      },
+      audit: async ({ report }) => {
+        if (!report) return;
+        await _appendAudit({
+          resourceId: r._id, actorType: 'student', actorEmail: c.email,
+          kind: 'resource.reported',
+          payload: { reason: reasonText }
+        });
+      },
+      rollback: async ({ report }) => {
+        if (!report) return;
+        try { await ResourceReport.deleteOne({ _id: report._id }); } catch {}
+      }
+    });
+    if (!created.ok) {
+      return res.status(500).json({ error: 'audit write failed — report not persisted' });
     }
-    if (inserted) {
-      const openReports = await ResourceReport.countDocuments({ resourceId: r._id, status: 'open' });
-      if (openReports >= AUTO_HIDE_REPORTS && !r.deletedAt) {
-        const muted = markDeleted(r, 'system');
-        r.deletedAt = muted.deletedAt; r.deletedBy = muted.deletedBy;
-        await r.save();
+    const inserted = created.result.inserted;
+    if (!inserted) return res.json({ ok: true, reported: false });
+
+    // Step 2: auto-hide if the threshold was just crossed.
+    // DELIBERATELY ASYMMETRIC: the audit log gap here is logged + retried
+    // inline. The resource MUST stay hidden even if audit logging fails —
+    // student-visible garbage is the bigger harm. See tier 5 / 6 plan.
+    const openReports = await ResourceReport.countDocuments({ resourceId: r._id, status: 'open' });
+    if (openReports >= AUTO_HIDE_REPORTS && !r.deletedAt) {
+      const muted = markDeleted(r, 'system');
+      r.deletedAt = muted.deletedAt; r.deletedBy = muted.deletedBy;
+      await r.save();
+      try {
+        await _appendAudit({
+          resourceId: r._id, actorType: 'system', actorEmail: null,
+          kind: 'resource.auto_hidden',
+          payload: { trigger: 'report_threshold', reportCount: openReports }
+        });
+      } catch (auditErr) {
+        // Asymmetric: log + retry once. The hide stays.
+        const warn = { resourceId: r._id, error: auditErr?.message };
+        console.error('AUDIT-CONSISTENCY', JSON.stringify({
+          rollbackLabel: 'student-report-auto-hidden',
+          auditError: warn.error,
+          note: 'auto-hide audit write failed; retrying once'
+        }));
+        try {
+          await _appendAudit({
+            resourceId: r._id, actorType: 'system', actorEmail: null,
+            kind: 'resource.auto_hidden',
+            payload: { trigger: 'report_threshold', reportCount: openReports }
+          });
+        } catch (retryErr) {
+          console.error('AUDIT-CONSISTENCY', JSON.stringify({
+            rollbackLabel: 'student-report-auto-hidden',
+            auditError: retryErr?.message,
+            note: 'auto-hide audit FAILED PERMANENTLY; hide kept, audit gap is permanent'
+          }));
+        }
       }
     }
-    res.json({ ok: true, reported: inserted });
+    res.json({ ok: true, reported: true });
   });
 
   api.delete('/resources/:id', async (req, res) => {

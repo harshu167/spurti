@@ -32,12 +32,15 @@ import {
   buildListQuery, buildMineQuery, buildContextQuery, markDeleted, markRestored,
   summariseImpact, AUTO_HIDE_REPORTS, withContextLabel
 } from '../server/services/resources.js';
+import { appendAudit } from '../server/services/audit.js';
 import registerResourceRoutes from '../server/routes/resources.js';
+import registerAdminResourceRoutes from '../server/routes/admin-resources.js';
 
 import Resource from '../server/models/Resource.js';
 import ResourceSave from '../server/models/ResourceSave.js';
 import ResourceRating from '../server/models/ResourceRating.js';
 import ResourceReport from '../server/models/ResourceReport.js';
+import ResourceAuditEvent from '../server/models/ResourceAuditEvent.js';
 import Student from '../server/models/Student.js';
 
 // ── per-test ephemeral samagama stub ──────────────────────────────────────
@@ -107,30 +110,14 @@ function buildApp({ samagamaUrl }) {
     buildListQuery, buildMineQuery, buildContextQuery, summariseImpact, AUTO_HIDE_REPORTS,
     withContextLabel
   });
-  api.get('/admin/resources', adminGuard, async (req, res) => {
-    const incl = String(req.query.deleted || '') === '1';
-    const rows = await Resource.find(incl ? {} : { deletedAt: null }).sort({ createdAt: -1 }).limit(200).lean();
-    res.json({ rows });
-  });
-  api.delete('/admin/resources/:id', adminGuard, async (req, res) => {
-    const r = await Resource.findById(req.params.id);
-    if (!r) return res.status(404).json({ error: 'Not found' });
-    if (!r.deletedAt) { const m = markDeleted(r, req.headers['x-admin-email']); r.deletedAt = m.deletedAt; r.deletedBy = m.deletedBy; await r.save(); }
-    res.json({ ok: true, deletedAt: r.deletedAt });
-  });
-  api.post('/admin/resources/:id/restore', adminGuard, async (req, res) => {
-    const r = await Resource.findById(req.params.id);
-    if (!r) return res.status(404).json({ error: 'Not found' });
-    if (!r.deletedAt) return res.json({ ok: true, alreadyActive: true });
-    const restored = markRestored(r.toObject());
-    // `restored` carries utility+status (re-derived from counts); explicitly
-    // null the soft-delete fields on the live doc so the next
-    // `findOne({deletedAt: null})` read sees an un-deleted record.
-    Object.assign(r, restored);
-    r.deletedAt = null;
-    r.deletedBy = '';
-    await r.save();
-    res.json({ ok: true, restored: true, utility: r.utility, status: r.status });
+  // Tier 6 — admin routes now go through ./routes/admin-resources.js with
+  // the fail-closed withAudit wrapper. The default `appendAudit` is the
+  // real one so the existing tier 2 tests prove audit rows are visible
+  // after real requests. Tests for the audit-failure rollback path build
+  // their own app with a throwing stub.
+  registerAdminResourceRoutes(api, {
+    adminGuard, leaderboardGroup,
+    appendAudit: appendAudit
   });
   app.use('/api', api);
   return { app, reportBuckets };
@@ -461,5 +448,323 @@ describe('Resource Exchange route integration (real MongoDB)', () => {
       .set('x-admin-email', process.env.ADMIN_EMAIL).set('x-admin-token', process.env.ADMIN_TOKEN);
     // restore re-derived utility + status from FRESH counts
     assert.equal(r2.body.status, 'verified', 'status must recompute from current counts after restore');
+  });
+
+  // ── TIER 6 — audit-event visibility tests ─────────────────────────────────
+  // These tests prove that AFTER a real admin or student request succeeds,
+  // an actual ResourceAuditEvent row exists in the DB with the structured
+  // payload the service contract requires. This is the gate you specifically
+  // asked for: not "did appendAudit get called" but "is the audit record real".
+
+  async function fetchAuditForResource(resourceId) {
+    return ResourceAuditEvent.find({ resourceId }).sort({ at: -1 }).lean();
+  }
+
+  test('admin delete → resource.deleted audit row exists with reason', async () => {
+    await ResourceAuditEvent.deleteMany({});
+    const a = await asStudent('alice@iitrpr.ac.in');
+    const create = await request(app).post('/api/resources').set('Cookie', cookie(a.token))
+      .send(validBody({ title: 'thing-to-delete' }));
+    await request(app).delete(`/api/resources/${create.body.id}`)
+      .set('Cookie', cookie(a.token));   // owner-delete first
+    const del = await request(app).delete(`/api/admin/resources/${create.body.id}`)
+      .set('x-admin-email', process.env.ADMIN_EMAIL)
+      .set('x-admin-token', process.env.ADMIN_TOKEN)
+      .send({ reason: 'wrong topic' });
+    assert.equal(del.status, 200);
+    const events = await fetchAuditForResource(create.body.id);
+    const adminDelete = events.find(e => e.kind === 'resource.deleted' && e.actorType === 'admin');
+    assert.ok(adminDelete, 'admin resource.deleted event must exist');
+    assert.equal(adminDelete.payload.reason, 'wrong topic');
+    assert.equal(adminDelete.actorEmail, process.env.ADMIN_EMAIL);
+  });
+
+  test('admin restore → resource.restored audit row exists with previousStatus', async () => {
+    await ResourceAuditEvent.deleteMany({});
+    const a = await asStudent('alice@iitrpr.ac.in');
+    const create = await request(app).post('/api/resources').set('Cookie', cookie(a.token)).send(validBody());
+    const id = create.body.id;
+    await request(app).delete(`/api/resources/${id}`).set('Cookie', cookie(a.token));
+    const restore = await request(app).post(`/api/admin/resources/${id}/restore`)
+      .set('x-admin-email', process.env.ADMIN_EMAIL)
+      .set('x-admin-token', process.env.ADMIN_TOKEN);
+    assert.equal(restore.status, 200);
+    const events = await fetchAuditForResource(id);
+    const r = events.find(e => e.kind === 'resource.restored');
+    assert.ok(r);
+    assert.equal(r.actorType, 'admin');
+    assert.equal(r.payload.previousStatus, 'new');
+  });
+
+  test('admin update → resource.updated audit row carries from→to for context + title', async () => {
+    await ResourceAuditEvent.deleteMany({});
+    const a = await asStudent('alice@iitrpr.ac.in');
+    const create = await request(app).post('/api/resources').set('Cookie', cookie(a.token))
+      .send(validBody({ title: 'old', contextType: 'phase', contextRef: 'standup' }));
+    const id = create.body.id;
+    const patch = await request(app).patch(`/api/admin/resources/${id}`)
+      .set('x-admin-email', process.env.ADMIN_EMAIL)
+      .set('x-admin-token', process.env.ADMIN_TOKEN)
+      .send({
+        title: 'new',
+        contextType: 'phase',
+        contextRef: 'vibe',
+        reason: 'moved phase'
+      });
+    assert.equal(patch.status, 200);
+    const events = await fetchAuditForResource(id);
+    const u = events.find(e => e.kind === 'resource.updated');
+    assert.ok(u);
+    assert.equal(u.actorType, 'admin');
+    assert.equal(u.payload.changes.context.from.contextRef, 'standup');
+    assert.equal(u.payload.changes.context.to.contextRef, 'vibe');
+    assert.deepEqual(u.payload.changes.title, { from: 'old', to: 'new' });
+    assert.equal(u.payload.reason, 'moved phase');
+  });
+
+  test('admin update with context but unchanged title emits only context', async () => {
+    await ResourceAuditEvent.deleteMany({});
+    const a = await asStudent('alice@iitrpr.ac.in');
+    const create = await request(app).post('/api/resources').set('Cookie', cookie(a.token))
+      .send(validBody({ title: 'X', contextType: 'phase', contextRef: 'standup' }));
+    const id = create.body.id;
+    await request(app).patch(`/api/admin/resources/${id}`)
+      .set('x-admin-email', process.env.ADMIN_EMAIL)
+      .set('x-admin-token', process.env.ADMIN_TOKEN)
+      .send({ title: 'X', contextType: 'phase', contextRef: 'vibe', reason: 'moved' });
+    const events = await fetchAuditForResource(id);
+    const u = events.find(e => e.kind === 'resource.updated');
+    assert.ok(u);
+    assert.ok(u.payload.changes.context, 'context change present');
+    assert.equal(u.payload.changes.title, undefined, 'title unchanged → omitted');
+  });
+
+  test('admin update with invalid context → 400, NO audit row written', async () => {
+    await ResourceAuditEvent.deleteMany({});
+    const a = await asStudent('alice@iitrpr.ac.in');
+    const create = await request(app).post('/api/resources').set('Cookie', cookie(a.token))
+      .send(validBody({ contextType: 'phase', contextRef: 'standup' }));
+    const id = create.body.id;
+    const bad = await request(app).patch(`/api/admin/resources/${id}`)
+      .set('x-admin-email', process.env.ADMIN_EMAIL)
+      .set('x-admin-token', process.env.ADMIN_TOKEN)
+      .send({ contextType: 'topic', contextRef: '!!!' });   // bad slug
+    assert.equal(bad.status, 400);
+    const events = await fetchAuditForResource(id);
+    assert.equal(events.find(e => e.kind === 'resource.updated'), undefined,
+      'no audit row for failed PATCH');
+  });
+
+  test('admin create → resource.created + source forced to admin (body ignored)', async () => {
+    await ResourceAuditEvent.deleteMany({});
+    const created = await request(app).post('/api/admin/resources')
+      .set('x-admin-email', process.env.ADMIN_EMAIL)
+      .set('x-admin-token', process.env.ADMIN_TOKEN)
+      .send({
+        type: 'link', url: 'https://example.com/official', title: 'Official lecture notes',
+        description: 'faculty-curated',
+        contextType: 'phase', contextRef: 'standup',
+        cohort: COHORT,
+        source: 'student'                  // attempt to bypass — server must override
+      });
+    assert.equal(created.status, 200);
+    const id = created.body.id;
+    const persistedDoc = await Resource.findById(id).lean();
+    assert.equal(persistedDoc.source, 'admin', 'server forced source to admin');
+    assert.equal(persistedDoc.cohort, COHORT);
+    const events = await fetchAuditForResource(id);
+    const c = events.find(e => e.kind === 'resource.created');
+    assert.ok(c);
+    assert.equal(c.actorType, 'admin');
+    assert.equal(c.payload.source, 'admin');
+    assert.equal(c.payload.title, 'Official lecture notes');
+  });
+
+  test('admin hide → resource.hidden audit row with reason', async () => {
+    await ResourceAuditEvent.deleteMany({});
+    const a = await asStudent('alice@iitrpr.ac.in');
+    const create = await request(app).post('/api/resources').set('Cookie', cookie(a.token)).send(validBody());
+    const id = create.body.id;
+    const hide = await request(app).post(`/api/admin/resources/${id}/hide`)
+      .set('x-admin-email', process.env.ADMIN_EMAIL)
+      .set('x-admin-token', process.env.ADMIN_TOKEN)
+      .send({ reason: 'spam' });
+    assert.equal(hide.status, 200);
+    const events = await fetchAuditForResource(id);
+    const h = events.find(e => e.kind === 'resource.hidden');
+    assert.ok(h);
+    assert.equal(h.actorType, 'admin');
+    assert.equal(h.payload.reason, 'spam');
+  });
+
+  test('student report → resource.reported audit row + (if threshold) resource.auto_hidden', async () => {
+    await ResourceAuditEvent.deleteMany({});
+    const b = await asStudent('bob-t6-r1@iitrpr.ac.in');
+    const c = await asStudent('charlie-t6-r1@iitrpr.ac.in');
+    const create = await request(app).post('/api/resources').set('Cookie', cookie(b.token)).send(validBody());
+    const id = create.body.id;
+    await request(app).post(`/api/resources/${id}/report`)
+      .set('Cookie', cookie(b.token)).send({ reason: 'first' });
+    await request(app).post(`/api/resources/${id}/report`)
+      .set('Cookie', cookie(c.token)).send({ reason: 'second' });
+    const events = await fetchAuditForResource(id);
+    assert.equal(events.filter(e => e.kind === 'resource.reported').length, 2);
+    assert.equal(events.filter(e => e.kind === 'resource.auto_hidden').length, 1);
+    const a2 = events.find(e => e.kind === 'resource.auto_hidden');
+    assert.equal(a2.actorType, 'system');
+    assert.equal(a2.payload.trigger, 'report_threshold');
+    assert.equal(a2.payload.reportCount, 2);
+  });
+
+  test('admin resolve report → resource.report_resolved audit row', async () => {
+    await ResourceAuditEvent.deleteMany({});
+    const a = await asStudent('alice@iitrpr.ac.in');
+    const create = await request(app).post('/api/resources').set('Cookie', cookie(a.token)).send(validBody());
+    const id = create.body.id;
+    await request(app).post(`/api/resources/${id}/report`)
+      .set('Cookie', cookie(a.token)).send({ reason: 'spam' });
+    const reportDoc = await ResourceReport.findOne({ resourceId: id });
+    const resolve = await request(app).post(`/api/admin/resource-reports/${reportDoc._id}/resolve`)
+      .set('x-admin-email', process.env.ADMIN_EMAIL)
+      .set('x-admin-token', process.env.ADMIN_TOKEN)
+      .send({ action: 'dismissed', reason: 'reviewed ok' });
+    assert.equal(resolve.status, 200);
+    const events = await fetchAuditForResource(id);
+    const ev = events.find(e => e.kind === 'resource.report_resolved');
+    assert.ok(ev);
+    assert.equal(ev.actorType, 'admin');
+    assert.equal(ev.payload.status, 'dismissed');
+    assert.equal(ev.payload.reason, 'reviewed ok');
+  });
+
+  // ── Tier 6 — fail-closed tests ────────────────────────────────────────────
+  // Build minimal admin/student apps that share the test DB but pass a
+  // throwing `appendAudit` to the routes. This proves the rollback path
+  // without needing in-memory model stubs.
+  function buildAdminAppFailAudit() {
+    const app2 = express();
+    app2.use(express.json());
+    const api2 = express.Router();
+    function adminGuard(req, res, next) {
+      const emailOk = (req.headers['x-admin-email'] || '') === process.env.ADMIN_EMAIL;
+      const tokenOk = (req.headers['x-admin-token'] || '') === process.env.ADMIN_TOKEN;
+      if (!emailOk || !tokenOk) return res.status(403).json({ error: 'Forbidden' });
+      next();
+    }
+    registerAdminResourceRoutes(api2, {
+      adminGuard, leaderboardGroup,
+      appendAudit: async () => { throw new Error('audit failed (test stub)'); }
+    });
+    app2.use('/api', api2);
+    return app2;
+  }
+  function buildStudentAppFailAudit() {
+    const app2 = express();
+    app2.use(express.json());
+    const api2 = express.Router();
+    // Hand-rolled requireStudent: parses cookie → samagama-stub.
+    app2.use((req, res, next) => {
+      const cookie = (req.headers.cookie || '').match(/chatengine_token=([^;]+)/);
+      req.studentEmail = cookie ? cookieMap[cookie[1]] : null;
+      next();
+    });
+    registerResourceRoutes(api2, {
+      requireStudent: async (req, res) => {
+        const email = req.studentEmail;
+        if (!email) { res.status(401).end(); return null; }
+        const s = await Student.findOne({ email }).lean();
+        if (!s) { res.status(404).end(); return null; }
+        return { email, student: s };
+      },
+      reportRateLimit: () => false,
+      leaderboardGroup,
+      validateCreate, validateStars, bumpResource, markDeleted, markRestored,
+      buildListQuery, buildMineQuery, buildContextQuery, summariseImpact, AUTO_HIDE_REPORTS,
+      withContextLabel,
+      appendAudit: async () => { throw new Error('audit failed (test stub)'); }
+    });
+    app2.use('/api', api2);
+    return app2;
+  }
+
+  test('admin create + audit fail → orphan hard-deleted, 500 returned', async () => {
+    await ResourceAuditEvent.deleteMany({});
+    const failApp = buildAdminAppFailAudit();
+    const created = await request(failApp).post('/api/admin/resources')
+      .set('x-admin-email', process.env.ADMIN_EMAIL)
+      .set('x-admin-token', process.env.ADMIN_TOKEN)
+      .send({
+        type: 'link', url: 'https://example.com/x', title: 'orphan-attempt',
+        contextType: 'phase', contextRef: 'vibe', cohort: '2026-08-01_to_2026-08-15'
+      });
+    assert.equal(created.status, 500, 'admin create must fail-closed when audit fails');
+    const count = await Resource.countDocuments({});
+    assert.equal(count, 0, 'orphan resource must be hard-deleted when audit fails');
+    const audits = await ResourceAuditEvent.countDocuments({});
+    assert.equal(audits, 0);
+  });
+
+  test('admin edit + audit fail → resource restored to pre-image', async () => {
+    await ResourceAuditEvent.deleteMany({});
+    const a = await asStudent('alice@iitrpr.ac.in');
+    const create = await request(app).post('/api/resources').set('Cookie', cookie(a.token))
+      .send(validBody({ title: 'pre-image-title', contextType: 'phase', contextRef: 'standup' }));
+    const id = create.body.id;
+    const failApp = buildAdminAppFailAudit();
+    const patch = await request(failApp).patch(`/api/admin/resources/${id}`)
+      .set('x-admin-email', process.env.ADMIN_EMAIL)
+      .set('x-admin-token', process.env.ADMIN_TOKEN)
+      .send({ title: 'mutation-attempt' });
+    assert.equal(patch.status, 500);
+    const after = await Resource.findById(id).lean();
+    assert.equal(after.title, 'pre-image-title');
+    assert.equal(after.contextRef, 'standup');
+  });
+
+  test('admin restore + audit fail → resource remains deleted', async () => {
+    await ResourceAuditEvent.deleteMany({});
+    const a = await asStudent('alice@iitrpr.ac.in');
+    const create = await request(app).post('/api/resources').set('Cookie', cookie(a.token)).send(validBody());
+    const id = create.body.id;
+    await request(app).delete(`/api/resources/${id}`).set('Cookie', cookie(a.token));
+    const failApp = buildAdminAppFailAudit();
+    const restore = await request(failApp).post(`/api/admin/resources/${id}/restore`)
+      .set('x-admin-email', process.env.ADMIN_EMAIL)
+      .set('x-admin-token', process.env.ADMIN_TOKEN);
+    assert.equal(restore.status, 500);
+    const after = await Resource.findById(id).lean();
+    assert.ok(after.deletedAt, 'resource should remain deleted after failed restore');
+  });
+
+  test('admin hide + audit fail → resource remains visible', async () => {
+    await ResourceAuditEvent.deleteMany({});
+    const a = await asStudent('alice@iitrpr.ac.in');
+    const create = await request(app).post('/api/resources').set('Cookie', cookie(a.token)).send(validBody());
+    const id = create.body.id;
+    const failApp = buildAdminAppFailAudit();
+    const hide = await request(failApp).post(`/api/admin/resources/${id}/hide`)
+      .set('x-admin-email', process.env.ADMIN_EMAIL)
+      .set('x-admin-token', process.env.ADMIN_TOKEN)
+      .send({ reason: 'spam' });
+    assert.equal(hide.status, 500);
+    const after = await Resource.findById(id).lean();
+    assert.equal(after.deletedAt, null, 'resource must NOT be hidden when audit fails');
+  });
+
+  test('student report + audit fail → report row rolled back, 500 returned', async () => {
+    await ResourceAuditEvent.deleteMany({});
+    const a = await asStudent('alice@iitrpr.ac.in');
+    const failApp = buildStudentAppFailAudit();
+    const created = await request(failApp).post('/api/resources')
+      .set('Cookie', cookie(a.token)).send(validBody());
+    assert.equal(created.status, 200);
+    const id = created.body.id;
+    const report = await request(failApp).post(`/api/resources/${id}/report`)
+      .set('Cookie', cookie(a.token)).send({ reason: 'spam' });
+    assert.equal(report.status, 500, 'student report must fail-closed when audit fails');
+    const reportRows = await ResourceReport.countDocuments({ resourceId: id });
+    assert.equal(reportRows, 0, 'rolled back: no orphan ResourceReport should remain');
+    const auditRows = await ResourceAuditEvent.countDocuments({ resourceId: id });
+    assert.equal(auditRows, 0);
   });
 });

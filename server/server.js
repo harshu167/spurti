@@ -21,6 +21,7 @@ import Announcement from './models/Announcement.js';
 import AnnouncementAck from './models/AnnouncementAck.js';
 import { buildAchievementState, verifyAchievement } from './services/achievements.js';
 import { leagueBand, levelFor, legendBadge, leaderboardGroup, groupLabel } from './services/levels.js';
+import { appendAudit as appendAuditService } from './services/audit.js';
 import Commitment from './models/Commitment.js';
 import { isVibeEligible, buildVibeState, validateBet, settleBetDemo, applySpDelta, courseByKey } from './services/vibe.js';
 import { buildStandupState, placeStandup, settleStandupDemo } from './services/standup.js';
@@ -29,6 +30,7 @@ import { buildSpaState } from './services/spa.js';
 import { buildTrajectoryState } from './services/trajectory.js';
 import { AUTO_HIDE_REPORTS, bumpResource, markDeleted, markRestored, summariseImpact, validateCreate, validateStars, buildListQuery, buildMineQuery, buildContextQuery, withContextLabel } from './services/resources.js';
 import registerResourceRoutes from './routes/resources.js';
+import registerAdminResourceRoutes from './routes/admin-resources.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
@@ -1243,40 +1245,18 @@ registerResourceRoutes(api, {
   withContextLabel,
 });
 
-// ---- Admin moderation -----------------------------------------------------
-api.get('/admin/resources', adminGuard, async (_req, res) => {
-  const includeDeleted = String(_req.query.deleted || '') === '1';
-  const filter = includeDeleted ? {} : { deletedAt: null };
-  const rows = await Resource.find(filter).sort({ createdAt: -1 }).limit(200).lean();
-  res.json({ rows });
-});
-
-api.delete('/admin/resources/:id', adminGuard, async (req, res) => {
-  const r = await Resource.findById(req.params.id);
-  if (!r) return res.status(404).json({ error: 'Not found' });
-  if (!r.deletedAt) {
-    const muted = markDeleted(r, req.headers['x-admin-email'] || 'admin');
-    r.deletedAt = muted.deletedAt; r.deletedBy = muted.deletedBy;
-    await r.save();
-  }
-  res.json({ ok: true, deletedAt: r.deletedAt });
-});
-
-api.post('/admin/resources/:id/restore', adminGuard, async (req, res) => {
-  const r = await Resource.findById(req.params.id);
-  if (!r) return res.status(404).json({ error: 'Not found' });
-  if (!r.deletedAt) return res.json({ ok: true, alreadyActive: true });
-  const restored = markRestored(r.toObject());
-  // markRestored re-derives utility + status from current counts so we can't
-  // ship a stale "verified" badge from before the deletion.
-  Object.assign(r, restored);
-  // markRestored strips deletedAt/deletedBy from `restored`, but the live
-  // mongoose doc still carries the old Date value — explicitly null both so
-  // the next `findOne({deletedAt: null})` read sees an un-deleted record.
-  r.deletedAt = null;
-  r.deletedBy = '';
-  await r.save();
-  res.json({ ok: true, restored: true, utility: r.utility, status: r.status });
+// ---- Admin moderation ----
+// Routes extracted to ./routes/admin-resources.js — that file owns the
+// withAudit fail-closed policy for every admin mutation. Mounting here with
+// the app's adminGuard and the real appendAudit from the service layer.
+//
+// Tier 6 — student-facing routes stay in routes/resources.js; admin-only
+// routes live in routes/admin-resources.js so the audit/emitter boundary
+// is obvious in the file tree.
+registerAdminResourceRoutes(api, {
+  adminGuard,
+  leaderboardGroup,
+  appendAudit: appendAuditService
 });
 
 app.use('/api', api);
