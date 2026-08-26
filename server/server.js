@@ -27,6 +27,8 @@ import { buildStandupState, placeStandup, settleStandupDemo } from './services/s
 import { buildJourneyState, saveJourneyPlan } from './services/journey.js';
 import { buildSpaState } from './services/spa.js';
 import { buildTrajectoryState } from './services/trajectory.js';
+import { AUTO_HIDE_REPORTS, bumpResource, markDeleted, markRestored, summariseImpact, validateCreate, validateStars, buildListQuery, buildMineQuery } from './services/resources.js';
+import registerResourceRoutes from './routes/resources.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
@@ -1197,6 +1199,83 @@ function pipelineHealth() {
 function last24Hours(now) {
   return new Date(now.getTime() - 24 * 60 * 60 * 1000);
 }
+
+// ---- Resource Exchange (Tier 2: routes extracted to ./routes/resources.js)
+// ponytail: report rate-limit is in-memory per-process. With 3k students this
+// fine; a real cluster would need Redis. Document + lift when we scale out.
+const reportBuckets = new Map();            // email -> {date, count}
+const REPORT_LIMIT_PER_DAY = 3;             // plan §10.4 — same email can't grief-report
+function reportRateLimit(email) {
+  const today = new Date().toISOString().slice(0, 10);
+  const key = email;
+  const b = reportBuckets.get(key);
+  if (!b || b.date !== today) {
+    reportBuckets.set(key, { date: today, count: 1 });
+    return false;
+  }
+  b.count += 1;
+  return b.count > REPORT_LIMIT_PER_DAY;
+}
+
+async function requireStudent(req, res) {
+  const email = await studentEmailFromRequest(req);
+  if (!email) { res.status(401).json({ error: 'Not authenticated' }); return null; }
+  const student = await Student.findOne({ $or: [{ email }, { alternateEmail: email }] }).lean();
+  if (!student) { res.status(404).json({ error: 'Student not found' }); return null; }
+  if (student.status === 'excused') { res.status(403).json({ error: 'Excused student' }); return null; }
+  return { email, student };
+}
+
+registerResourceRoutes(api, {
+  requireStudent,
+  reportRateLimit,
+  leaderboardGroup,
+  validateCreate,
+  validateStars,
+  buildListQuery,
+  buildMineQuery,
+  bumpResource,
+  markDeleted,
+  markRestored,
+  summariseImpact,
+  AUTO_HIDE_REPORTS,
+});
+
+// ---- Admin moderation -----------------------------------------------------
+api.get('/admin/resources', adminGuard, async (_req, res) => {
+  const includeDeleted = String(_req.query.deleted || '') === '1';
+  const filter = includeDeleted ? {} : { deletedAt: null };
+  const rows = await Resource.find(filter).sort({ createdAt: -1 }).limit(200).lean();
+  res.json({ rows });
+});
+
+api.delete('/admin/resources/:id', adminGuard, async (req, res) => {
+  const r = await Resource.findById(req.params.id);
+  if (!r) return res.status(404).json({ error: 'Not found' });
+  if (!r.deletedAt) {
+    const muted = markDeleted(r, req.headers['x-admin-email'] || 'admin');
+    r.deletedAt = muted.deletedAt; r.deletedBy = muted.deletedBy;
+    await r.save();
+  }
+  res.json({ ok: true, deletedAt: r.deletedAt });
+});
+
+api.post('/admin/resources/:id/restore', adminGuard, async (req, res) => {
+  const r = await Resource.findById(req.params.id);
+  if (!r) return res.status(404).json({ error: 'Not found' });
+  if (!r.deletedAt) return res.json({ ok: true, alreadyActive: true });
+  const restored = markRestored(r.toObject());
+  // markRestored re-derives utility + status from current counts so we can't
+  // ship a stale "verified" badge from before the deletion.
+  Object.assign(r, restored);
+  // markRestored strips deletedAt/deletedBy from `restored`, but the live
+  // mongoose doc still carries the old Date value — explicitly null both so
+  // the next `findOne({deletedAt: null})` read sees an un-deleted record.
+  r.deletedAt = null;
+  r.deletedBy = '';
+  await r.save();
+  res.json({ ok: true, restored: true, utility: r.utility, status: r.status });
+});
 
 app.use('/api', api);
 app.use('/spurti/api', api);
