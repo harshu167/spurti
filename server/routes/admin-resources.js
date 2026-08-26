@@ -12,6 +12,8 @@
  */
 import Resource from '../models/Resource.js';
 import ResourceReport from '../models/ResourceReport.js';
+import ResourceAuditEvent from '../models/ResourceAuditEvent.js';
+import mongoose from 'mongoose';
 import {
   validateCreate, validateStars, bumpResource,
   buildListQuery, buildMineQuery, buildContextQuery, markDeleted, markRestored,
@@ -386,5 +388,54 @@ export default function registerAdminResourceRoutes(api, ctx) {
     }
     if (out.result.noop) return res.json({ ok: true, alreadyResolved: true });
     res.json({ ok: true, action: actionRaw, status: actionRaw });
+  });
+
+  // ── Tier 7 — read-only endpoints for the Admin Resource Control Center ─────
+  // All read-only. They don't write audit rows; they're pure lookups so an
+  // admin can see what's happening without affecting state.
+
+  // Full detail of one resource, including denormalised counters and source.
+  api.get('/admin/resources/:id', adminGuard, async (req, res) => {
+    const r = await Resource.findById(req.params.id).lean();
+    if (!r) return res.status(404).json({ error: 'Not found' });
+    res.json(r);
+  });
+
+  // Per-resource audit timeline.
+  api.get('/admin/resources/:id/audit', adminGuard, async (req, res) => {
+    const events = await ResourceAuditEvent.find({ resourceId: req.params.id })
+      .sort({ at: -1 })
+      .limit(500)
+      .lean();
+    res.json({ events });
+  });
+
+  // Cross-resource audit log with filters.
+  // Query params: actor, resourceId, kind, from (ISO), to (ISO).
+  api.get('/admin/audit', adminGuard, async (req, res) => {
+    const filter = {};
+    if (req.query.actor) filter.actorEmail = String(req.query.actor).toLowerCase();
+    if (req.query.resourceId && mongoose.isValidObjectId(req.query.resourceId)) {
+      filter.resourceId = req.query.resourceId;
+    }
+    if (req.query.kind) filter.kind = String(req.query.kind);
+    if (req.query.from || req.query.to) {
+      filter.at = {};
+      if (req.query.from) filter.at.$gte = new Date(String(req.query.from));
+      if (req.query.to) filter.at.$lte = new Date(String(req.query.to));
+    }
+    const events = await ResourceAuditEvent.find(filter)
+      .sort({ at: -1 })
+      .limit(500)
+      .lean();
+    res.json({ events });
+  });
+
+  // Open reports first, then recently-resolved. Used by the Reports tab.
+  api.get('/admin/reports', adminGuard, async (req, res) => {
+    const status = req.query.status;
+    const filter = status ? { status: String(status) } : {};
+    const rows = await ResourceReport.find(filter).sort({ createdAt: -1 }).limit(200).lean();
+    res.json({ rows });
   });
 }

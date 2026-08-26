@@ -694,6 +694,98 @@ describe('Resource Exchange route integration (real MongoDB)', () => {
     assert.equal(afterResource.deletedAt, null, 'resource must NOT be hidden when audit fails');
   });
 
+  // ── Tier 7 — read-only admin endpoints ────────────────────────────────────
+  test('GET /admin/resources/:id returns full detail incl. source, counters', async () => {
+    await ResourceAuditEvent.deleteMany({});
+    const created = await request(app).post('/api/admin/resources')
+      .set('x-admin-email', process.env.ADMIN_EMAIL)
+      .set('x-admin-token', process.env.ADMIN_TOKEN)
+      .send({ type: 'link', url: 'https://example.com/x', title: 'detail-test',
+              contextType: 'phase', contextRef: 'standup', cohort: COHORT });
+    const id = created.body.id;
+    const detail = await request(app).get(`/api/admin/resources/${id}`)
+      .set('x-admin-email', process.env.ADMIN_EMAIL)
+      .set('x-admin-token', process.env.ADMIN_TOKEN);
+    assert.equal(detail.status, 200);
+    assert.equal(detail.body.title, 'detail-test');
+    assert.equal(detail.body.source, 'admin');
+    assert.equal(detail.body.cohort, COHORT);
+    assert.ok(detail.body.createdBy);
+    assert.equal(typeof detail.body.saveCount, 'number');
+  });
+
+  test('GET /admin/resources/:id/audit returns the events for this resource', async () => {
+    await ResourceAuditEvent.deleteMany({});
+    const a = await asStudent('alice-t7-detail@iitrpr.ac.in');
+    const create = await request(app).post('/api/resources').set('Cookie', cookie(a.token)).send(validBody());
+    const id = create.body.id;
+    await request(app).post(`/api/admin/resources/${id}/hide`)
+      .set('x-admin-email', process.env.ADMIN_EMAIL)
+      .set('x-admin-token', process.env.ADMIN_TOKEN)
+      .send({ reason: 'spam' });
+    const audit = await request(app).get(`/api/admin/resources/${id}/audit`)
+      .set('x-admin-email', process.env.ADMIN_EMAIL)
+      .set('x-admin-token', process.env.ADMIN_TOKEN);
+    assert.equal(audit.status, 200);
+    assert.ok(Array.isArray(audit.body.events));
+    // Admin hide is the audit event for this resource; student-created
+    // resources do NOT emit resource.created (out of tier-6 scope).
+    assert.ok(audit.body.events.find(e => e.kind === 'resource.hidden'),
+      'admin-hide event must appear in the per-resource timeline');
+  });
+
+  test('GET /admin/audit?actor= filters by actor', async () => {
+    await ResourceAuditEvent.deleteMany({});
+    const a = await asStudent('alice-t7-actor@iitrpr.ac.in');
+    const create = await request(app).post('/api/resources').set('Cookie', cookie(a.token)).send(validBody());
+    const id = create.body.id;
+    // student-create event (actor = alice)
+    await request(app).post(`/api/admin/resources/${id}/hide`)
+      .set('x-admin-email', process.env.ADMIN_EMAIL)
+      .set('x-admin-token', process.env.ADMIN_TOKEN)
+      .send({ reason: 'spam' });
+    // actor=admin → only the admin's event
+    const adminOnly = await request(app).get(`/api/admin/audit?actor=${process.env.ADMIN_EMAIL}`)
+      .set('x-admin-email', process.env.ADMIN_EMAIL)
+      .set('x-admin-token', process.env.ADMIN_TOKEN);
+    assert.equal(adminOnly.status, 200);
+    assert.ok(adminOnly.body.events.length >= 1);
+    adminOnly.body.events.forEach(e => assert.equal(e.actorType, 'admin'));
+  });
+
+  test('GET /admin/audit?kind= filters by event kind', async () => {
+    await ResourceAuditEvent.deleteMany({});
+    const a = await asStudent('alice-t7-kind@iitrpr.ac.in');
+    const create = await request(app).post('/api/resources').set('Cookie', cookie(a.token)).send(validBody());
+    const id = create.body.id;
+    await request(app).post(`/api/admin/resources/${id}/hide`)
+      .set('x-admin-email', process.env.ADMIN_EMAIL)
+      .set('x-admin-token', process.env.ADMIN_TOKEN)
+      .send({ reason: 'spam' });
+    const onlyHidden = await request(app).get(`/api/admin/audit?kind=resource.hidden`)
+      .set('x-admin-email', process.env.ADMIN_EMAIL)
+      .set('x-admin-token', process.env.ADMIN_TOKEN);
+    assert.equal(onlyHidden.status, 200);
+    onlyHidden.body.events.forEach(e => assert.equal(e.kind, 'resource.hidden'));
+  });
+
+  test('GET /admin/reports returns reports list (open first)', async () => {
+    await ResourceAuditEvent.deleteMany({});
+    const a = await asStudent('alice-t7-reports@iitrpr.ac.in');
+    const create = await request(app).post('/api/resources').set('Cookie', cookie(a.token)).send(validBody());
+    const id = create.body.id;
+    await request(app).post(`/api/resources/${id}/report`)
+      .set('Cookie', cookie(a.token)).send({ reason: 'spam' });
+    const reports = await request(app).get(`/api/admin/reports`)
+      .set('x-admin-email', process.env.ADMIN_EMAIL)
+      .set('x-admin-token', process.env.ADMIN_TOKEN);
+    assert.equal(reports.status, 200);
+    assert.ok(Array.isArray(reports.body.rows));
+    assert.ok(reports.body.rows.length >= 1);
+    const openRow = reports.body.rows.find(r => r.resourceId.toString() === id && r.status === 'open');
+    assert.ok(openRow, 'open report row must be present');
+  });
+
   // ── Tier 6 — fail-closed tests ────────────────────────────────────────────
   // Build minimal admin/student apps that share the test DB but pass a
   // throwing `appendAudit` to the routes. This proves the rollback path
