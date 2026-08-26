@@ -139,3 +139,77 @@ export function buildUpdatePayload(fieldChanges, contextChange, extra = {}) {
   for (const [k, v] of Object.entries(extra)) payload[k] = v;
   return payload;
 }
+
+// ────────────────────────────────────────────────────────────────────────
+// withAudit — the only legal way a route mutates a Resource + writes audit.
+//
+// Not a transaction. There's a sub-millisecond window between the data write
+// and the audit write where a process crash would leave an unaudited
+// mutation. The only ways to close that window are mongo transactions or
+// write-before-mutate (audit hash chains). Both are deferred per plan.
+//
+// What this DOES guarantee:
+//   - if mutate succeeds and audit fails → rollback() is called and its
+//     outcome is reported
+//   - if both fail → a stderr 'AUDIT-CONSISTENCY' line is written. Loud on
+//     purpose so logs catch it.
+//   - never throws synchronously from inside the helper. The route inspects
+//     the result and decides what status to return.
+//
+// Shape:
+//   mutate()  → Promise<result>             (may throw; pre-image captured outside)
+//   audit(result) → Promise<void>           (throws → triggers rollback)
+//   rollback(result) → Promise<void>        (called on audit failure)
+//   rollbackLabel → string                  (logged on consistency failure)
+//
+// ponytail: Result.ok=true on success, false otherwise. The route returns
+// 500 on either fail-mode so the admin sees something failed.
+export async function withAudit({ mutate, audit, rollback, rollbackLabel }) {
+  // ponytail: shape guard runs BEFORE async. The function body that follows
+  // is `async`, so any throw inside becomes a promise rejection. To make the
+  // shape guard sync-throw-friendly (so test#assert.throws can capture it
+  // directly), validate args synchronously before the promise machinery
+  // kicks in. The early return is a rejected Promise, which is still
+  // observable from tests via the .then().catch() chain — see
+  // test/audit-rollback.test.js for usage.
+  if (typeof mutate !== 'function' || typeof audit !== 'function' || typeof rollback !== 'function') {
+    return Promise.reject(new Error('withAudit: mutate, audit, rollback must all be functions'));
+  }
+  const result = await mutate();
+  try {
+    await audit(result);
+    return { ok: true, stage: null, rollback: null, result };
+  } catch (auditErr) {
+    let rbErr = null;
+    try {
+      await rollback(result);
+    } catch (e) {
+      rbErr = e;
+    }
+    if (rbErr) {
+      // Consistency failure: the mutation is still in the database and
+      // the rollback failed. Surface this in the logs immediately. Do NOT
+      // swallow or downgrade — the operator needs to see this.
+      console.error('AUDIT-CONSISTENCY', JSON.stringify({
+        rollbackLabel: rollbackLabel || 'unnamed',
+        auditError: auditErr?.message || String(auditErr),
+        rollbackError: rbErr?.message || String(rbErr)
+      }));
+      return {
+        ok: false,
+        stage: 'rollback',
+        rollback: 'failed',
+        auditError: auditErr?.message || String(auditErr),
+        rollbackError: rbErr?.message || String(rbErr),
+        result
+      };
+    }
+    return {
+      ok: false,
+      stage: 'audit',
+      rollback: 'ok',
+      auditError: auditErr?.message || String(auditErr),
+      result
+    };
+  }
+}
