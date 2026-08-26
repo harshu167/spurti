@@ -1007,3 +1007,34 @@ tr.step-alert td { border-color: #f3c9c5; }
 .rmw-cta button { padding: 8px 16px; border: 1px solid var(--line); border-radius: 8px; background: #fff; font: inherit; cursor: pointer; }
 .rmw-cta button[disabled] { opacity: 0.5; cursor: default; }
 .rmw-error { color: var(--muted); font-size: 13px; margin: 6px 0 0; }
+
+/* ---- Tier 5 — Recovery Monitor (admin) ----------------------------------- */
+/* Monochrome per design directive. No coloured status pills — the
+   human-readable trigger reason and a single text label are the signals. */
+.rmon { display: flex; flex-direction: column; gap: 14px; }
+.rmon-stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; }
+.rmon-stat { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 4px; }
+.rmon-stat-n { font-size: 22px; font-weight: 600; }
+.rmon-stat-l { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.rmon-week { font-size: 12px; color: var(--muted); margin: -4px 0 4px; }
+.rmon-table { background: #fff; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.rmon-row { display: grid; grid-template-columns: 1.2fr 1fr 1.4fr 0.8fr 0.5fr; gap: 12px; padding: 10px 14px; align-items: center; border-bottom: 1px solid var(--line); cursor: pointer; font-size: 13px; }
+.rmon-row:last-child { border-bottom: none; }
+.rmon-row-h { font-weight: 600; background: #f8fafc; cursor: default; font-size: 12px; text-transform: uppercase; letter-spacing: 0.02em; color: var(--muted); }
+.rmon-row:hover:not(.rmon-row-h) { background: #fafafa; }
+.rmon-student strong { display: block; }
+.rmon-student em { font-style: normal; font-size: 11px; color: var(--muted); }
+.rmon-trigger { font-size: 13px; color: var(--muted); }
+.rmon-status { font-size: 12px; color: var(--muted); text-transform: capitalize; }
+.rmon-empty { padding: 20px; text-align: center; color: var(--muted); font-size: 13px; margin: 0; }
+.rmon-h3 { margin: 14px 0 4px; font-size: 14px; font-weight: 600; }
+.rmon-muted { color: var(--muted); font-size: 13px; }
+.rmon-detail { display: flex; flex-direction: column; gap: 12px; padding: 0 16px 16px; }
+.rmon-detail-section h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); margin: 0 0 4px; }
+.rmon-detail-section p { margin: 0 0 4px; font-size: 14px; }
+.rmon-audit-row { display: grid; grid-template-columns: 1.2fr 1.5fr 1fr; gap: 12px; padding: 4px 0; font-size: 13px; border-bottom: 1px solid #f1f5f9; }
+.rmon-audit-kind { font-family: ui-monospace, monospace; font-size: 12px; }
+.rmon-templates { display: flex; flex-direction: column; gap: 8px; }
+.rmon-template { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.rmon-template em { font-style: normal; font-size: 12px; color: var(--muted); display: block; }
+.rmon-toggle { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; }

@@ -1989,6 +1989,7 @@ function ResourceControlCenter({ headers }) {
       <div className="rcc-subtabs">
         <button className={sub === 'resources' ? 'on' : ''} onClick={() => setSub('resources')}>Resources</button>
         <button className={sub === 'reports'  ? 'on' : ''} onClick={() => setSub('reports')}>Reports</button>
+        <button className={sub === 'recovery' ? 'on' : ''} onClick={() => setSub('recovery')}>Recovery</button>
         <button className={sub === 'audit'    ? 'on' : ''} onClick={() => setSub('audit')}>Audit Log</button>
       </div>
       <ResourceExchangeToggle headers={headers} />
@@ -2045,6 +2046,7 @@ function ResourceControlCenter({ headers }) {
         </>
       )}
       {sub === 'reports' && <ReportsSubView headers={headers} />}
+      {sub === 'recovery' && <RecoveryMonitorView headers={headers} />}
       {sub === 'audit'   && <AuditSubView headers={headers} />}
     </section>
   );
@@ -2055,6 +2057,196 @@ function ResourceControlCenter({ headers }) {
 // state and provides Disable / Enable with a small confirmation modal.
 // The 1-minute server-side cache means a toggle is NOT instantaneous for
 // already-connected students; that caveat is surfaced inline.
+// ---- Tier 5 — Recovery Monitor (admin side) ---------------------------------
+//
+// Centerpiece of the admin side of Recovery Missions. Answers the
+// mentor's original criticism: admin creates something, admin can see
+// every step of the student-facing lifecycle.
+//
+// Design rules:
+//   - show stats + table + row-level detail (no admin-only actions
+//     beyond enable/disable on templates)
+//   - human-readable trigger reasons, not raw scoring formulas
+//   - monochrome per design directive
+//   - support what the SPURTHI scheduler detected (the assignment),
+//     don't second-guess it
+function RecoveryMonitorView({ headers }) {
+  const [stats, setStats] = useState(null);
+  const [rows, setRows] = useState([]);
+  const [err, setErr] = useState(null);
+  const [openId, setOpenId] = useState(null);
+  const [detail, setDetail] = useState(null);
+  const [audit, setAudit] = useState([]);
+  const [templates, setTemplates] = useState([]);
+
+  async function load() {
+    setErr(null);
+    try {
+      const [s, l, t] = await Promise.all([
+        fetch(`${API}/admin/missions/stats`, { headers }).then(r => r.json()),
+        fetch(`${API}/admin/missions`,      { headers }).then(r => r.json()),
+        fetch(`${API}/admin/missions/templates`, { headers }).then(r => r.json())
+      ]);
+      setStats(s);
+      setRows((l && l.rows) || []);
+      setTemplates((t && t.templates) || []);
+    } catch (e) { setErr(e.message || 'Network error'); }
+  }
+  useEffect(() => { load(); }, []);
+
+  async function openRow(id) {
+    setOpenId(id);
+    setDetail(null);
+    setAudit([]);
+    try {
+      const [d, a] = await Promise.all([
+        fetch(`${API}/admin/missions/${id}`, { headers }).then(r => r.json()),
+        fetch(`${API}/admin/missions/${id}/audit`, { headers }).then(r => r.json())
+      ]);
+      setDetail(d);
+      setAudit((a && a.events) || []);
+    } catch (e) { setErr(e.message || 'Network error'); }
+  }
+
+  async function toggleTemplate(id, enabled) {
+    try {
+      const r = await fetch(`${API}/admin/missions/templates/${id}`, {
+        method: 'PATCH',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled })
+      });
+      if (!r.ok) throw new Error(await r.text());
+      await load();
+    } catch (e) { setErr(e.message || 'Network error'); }
+  }
+
+  if (err) return <p className="rcc-err">{err}</p>;
+  if (!stats) return <p className="rcc-muted">Loading…</p>;
+
+  return (
+    <div className="rmon">
+      {/* Stats card — the 5 numbers at the top */}
+      <div className="rmon-stats">
+        <div className="rmon-stat"><span className="rmon-stat-n">{stats.candidates}</span><span className="rmon-stat-l">Candidates</span></div>
+        <div className="rmon-stat"><span className="rmon-stat-n">{stats.assigned}</span><span className="rmon-stat-l">Assigned</span></div>
+        <div className="rmon-stat"><span className="rmon-stat-n">{stats.completed}</span><span className="rmon-stat-l">Completed</span></div>
+        <div className="rmon-stat"><span className="rmon-stat-n">{stats.expired}</span><span className="rmon-stat-l">Expired</span></div>
+        <div className="rmon-stat"><span className="rmon-stat-n">+{stats.spAwarded}</span><span className="rmon-stat-l">SP awarded</span></div>
+      </div>
+
+      <p className="rmon-week">This week · {stats.weekStart.slice(0, 10)}</p>
+
+      {/* Assignments table */}
+      <div className="rmon-table">
+        <div className="rmon-row rmon-row-h">
+          <span>Student</span><span>Trigger</span><span>Mission</span><span>Status</span><span>SP</span>
+        </div>
+        {rows.length === 0 && <p className="rmon-empty">No assignments this week.</p>}
+        {rows.map(r => (
+          <div key={r.assignmentId} className="rmon-row" onClick={() => openRow(r.assignmentId)}>
+            <span className="rmon-student">
+              <strong>{r.student.name}</strong>
+              <em>{r.student.cohort}</em>
+            </span>
+            <span className="rmon-trigger">{explainTrigger(r)}</span>
+            <span>{r.mission.title}</span>
+            <span className={`rmon-status rmon-status-${r.status}`}>{r.status.replace('_', ' ')}</span>
+            <span>{r.rewardApplied == null ? '—' : `+${r.rewardApplied}`}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Detail sheet */}
+      {openId && detail && (
+        <div className="overlay" onClick={() => setOpenId(null)}>
+          <section className="modal wide" onClick={e => e.stopPropagation()}>
+            <div className="modal-head">
+              <h2>{detail.student.name} · {detail.student.cohort}</h2>
+              <button className="icon" onClick={() => setOpenId(null)}>×</button>
+            </div>
+            <div className="rmon-detail">
+              <div className="rmon-detail-section">
+                <h3>Why assigned</h3>
+                <p>{explainTriggerDetail(detail)}</p>
+              </div>
+              <div className="rmon-detail-section">
+                <h3>Mission</h3>
+                <p><strong>{detail.mission.title}</strong></p>
+                <p className="rmon-muted">{detail.mission.description}</p>
+              </div>
+              <div className="rmon-detail-section">
+                <h3>Status</h3>
+                <p>{detail.status}</p>
+                <p className="rmon-muted">
+                  Assigned: {new Date(detail.createdAt).toLocaleString()}<br/>
+                  Expires: {new Date(detail.expiresAt).toLocaleString()}<br/>
+                  {detail.completedAt && <>Completed: {new Date(detail.completedAt).toLocaleString()}</>}
+                </p>
+              </div>
+              <div className="rmon-detail-section">
+                <h3>Result</h3>
+                <p>{detail.rewardApplied == null ? '—' : `+${detail.rewardApplied} SP`}</p>
+                <p className="rmon-muted">Current student SP: {detail.student.currentTotalSp}</p>
+              </div>
+              <div className="rmon-detail-section">
+                <h3>Audit</h3>
+                {audit.map(e => (
+                  <div key={e.id} className="rmon-audit-row">
+                    <span className="rmon-audit-kind">{e.kind}</span>
+                    <span className="rmon-muted">{e.actorType}{e.actorEmail ? ` · ${e.actorEmail}` : ''}</span>
+                    <span className="rmon-muted">{new Date(e.at).toLocaleString()}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {/* Templates enable/disable */}
+      <h3 className="rmon-h3">Templates</h3>
+      {templates.length === 0 && <p className="rmon-muted">No templates yet.</p>}
+      <div className="rmon-templates">
+        {templates.map(t => (
+          <div key={t.id} className="rmon-template">
+            <div>
+              <strong>{t.title}</strong>
+              <em>{t.activityType} · +{t.rewardSp} SP · {t.thisWeekAssignments} this week</em>
+            </div>
+            <label className="rmon-toggle">
+              <input
+                type="checkbox"
+                checked={t.enabled}
+                onChange={e => toggleTemplate(t.id, e.target.checked)}
+              />
+              <span>{t.enabled ? 'Enabled' : 'Disabled'}</span>
+            </label>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Render the human-readable trigger reason from a row. Avoids the
+// raw scoring formula — admin sees "why", not "how".
+function explainTrigger(row) {
+  if (!row.triggerReason) return '—';
+  if (row.spDelta7d < 0) return 'Engagement drop';
+  return 'Recent participation dip';
+}
+
+function explainTriggerDetail(detail) {
+  const delta = Number(detail.spDelta7d || 0);
+  const baseline = Number(detail.spAtDetection || 0);
+  if (baseline <= 0) return 'Recent participation dip';
+  const recent = baseline + delta; // baseline is the absolute total at detection
+  const pct = baseline > 0 ? Math.max(0, Math.round((baseline - recent) / baseline * 100)) : 0;
+  if (pct >= 30) return `Engagement dropped ${pct}% from personal baseline`;
+  if (pct >= 10) return `Engagement dipped ${pct}% from personal baseline`;
+  return 'Recent participation dip';
+}
+
 function ResourceExchangeToggle({ headers }) {
   const [cfg, setCfg] = useState(null);
   const [err, setErr] = useState(null);

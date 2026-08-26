@@ -31,6 +31,7 @@ import { buildTrajectoryState } from './services/trajectory.js';
 import { AUTO_HIDE_REPORTS, bumpResource, markDeleted, markRestored, summariseImpact, validateCreate, validateStars, buildListQuery, buildMineQuery, buildContextQuery, withContextLabel } from './services/resources.js';
 import registerResourceRoutes from './routes/resources.js';
 import registerAdminResourceRoutes from './routes/admin-resources.js';
+import registerAdminMissionRoutes from './routes/admin-missions.js';
 import registerMissionRoutes from './routes/missions.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -1263,6 +1264,12 @@ registerAdminResourceRoutes(api, {
   leaderboardGroup,
   appendAudit: appendAuditService
 });
+
+// ---- Recovery Missions — admin surface ----
+// Tier 5: Recovery Monitor. Read-only listings + template enable/disable.
+// No manual assignment / SP / completion paths — the scheduler is the
+// only thing that creates assignments.
+registerAdminMissionRoutes(api, { adminGuard });
 
 app.use('/api', api);
 app.use('/spurti/api', api);
