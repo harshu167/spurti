@@ -33,7 +33,16 @@ const resourceSchema = new mongoose.Schema({
   effect: { type: Number, default: null }, // v1: always null. v2: SP-delta impact score.
   deletedAt: { type: Date, default: null, index: true },
   deletedBy: { type: String, default: '' },
-  statusOverride: { type: String, enum: ['', 'verified', 'effective'], default: '' } // admin pin
+  statusOverride: { type: String, enum: ['', 'verified', 'effective'], default: '' }, // admin pin
+  // Origin of the resource. 'student' is the default for any resource created
+  // through the student flow; 'admin' is assigned only by the authenticated
+  // admin route, never trusted from the request body (see services/resources).
+  source: { type: String, enum: ['student', 'admin'], default: 'student', index: true },
+  // Sorted highest in the discover list when non-null. Set/unset by admin only.
+  // Plan §pining-ux: pin UI itself is tier 8; the field is in the schema now so
+  // the audit row can record a pin without a follow-up migration.
+  pinnedAt: { type: Date, default: null, index: true },
+  pinnedBy: { type: String, default: '' }
 }, { timestamps: true });
 
 resourceSchema.index({ cohort: 1, status: 1, utility: -1 });
