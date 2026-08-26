@@ -30,6 +30,7 @@ export default function register(api, ctx) {
     validateStars,
     buildListQuery,
     buildMineQuery,
+    buildContextQuery,
     bumpResource,
     markDeleted,
     markRestored,
@@ -77,6 +78,29 @@ export default function register(api, ctx) {
     const labelled = await labelRows(rows);
     const impact = summariseImpact(rows);
     res.json({ rows: labelled, ...impact });
+  });
+
+  // Tier 4 — fetch resources attached to a specific context. Used by the
+  // existing learning surfaces (phase cards in MyJourney today; poll cards
+  // when poll UI lands). Returns labelled rows plus a small `total` so the
+  // SPA can show a "see all" link only when there are more than the limit.
+  api.get('/resources/context/:type/:ref', async (req, res) => {
+    const c = await requireStudent(req, res);
+    if (!c) return;
+    const contextType = String(req.params.type);
+    const contextRef = String(req.params.ref);
+    // Reuse the create-side validator for the shape; route layer is still
+    // the only place we trust the caller's identity.
+    const shape = validateCreate({ type: 'link', url: 'https://x', title: 'x', contextType, contextRef });
+    if (!shape.ok) return res.status(400).json({ error: shape.error });
+    const q = buildContextQuery({
+      contextType, contextRef,
+      cohort: leaderboardGroup(c.student.internshipStartDate),
+      limit: req.query.limit
+    });
+    const rows = await Resource.find(q.filter).sort(q.sort).limit(q.limit).lean();
+    const labelled = await labelRows(rows);
+    res.json({ rows: labelled, total: labelled.length });
   });
 
   // ponytail: N+1 avoidance for contextLabel.

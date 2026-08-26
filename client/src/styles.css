@@ -895,3 +895,27 @@ tr.step-alert td { border-color: #f3c9c5; }
 .rx-stars button { font-size: 22px; padding: 2px 4px; }
 .rx-sheet-foot, .rx-sheet-foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 12px; }
 .rx-sheet-foot .rx-by { font-size: 13px; }
+
+/* Tier 4 — resources attached to a learning context (phase cards, etc.) */
+.rx-ctx { margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--line); }
+.rx-ctx-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 12px; }
+.rx-ctx-head .muted { font-weight: 600; color: var(--ink); }
+.rx-ctx-share { font-size: 12px; padding: 4px 10px; }
+.rx-ctx-empty { padding: 10px 0; font-style: italic; }
+.rx-ctx-list { display: grid; gap: 8px; }
+.rx-ctx-card {
+  display: grid; gap: 4px; text-align: left;
+  background: #f8fafc; border: 1px solid var(--line); border-radius: 8px;
+  padding: 10px 12px; cursor: pointer; font: inherit; color: inherit;
+  transition: background 80ms ease, border-color 80ms ease;
+  width: 100%;
+}
+.rx-ctx-card:hover, .rx-ctx-card:focus {
+  background: #fff; border-color: var(--primary); outline: none;
+}
+.rx-ctx-card-meta { font-size: 12px; text-transform: lowercase; }
+.rx-ctx-card-title { font-size: 14px; font-weight: 600; line-height: 1.3; }
+.rx-ctx-card-desc { font-size: 13px; line-height: 1.4; }
+.rx-ctx-card-foot { font-size: 12px; margin-top: 2px; }
+.rx-ctx-more { background: none; border: 1px dashed var(--line); border-radius: 8px; padding: 8px; cursor: pointer; font: inherit; text-align: center; }
+.rx-ctx-more:hover { background: #fff; }

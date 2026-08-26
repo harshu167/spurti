@@ -29,7 +29,7 @@ import http from 'node:http';
 import { leaderboardGroup } from '../server/services/levels.js';
 import {
   validateCreate, validateStars, bumpResource,
-  buildListQuery, buildMineQuery, markDeleted, markRestored,
+  buildListQuery, buildMineQuery, buildContextQuery, markDeleted, markRestored,
   summariseImpact, AUTO_HIDE_REPORTS, withContextLabel
 } from '../server/services/resources.js';
 import registerResourceRoutes from '../server/routes/resources.js';
@@ -104,7 +104,7 @@ function buildApp({ samagamaUrl }) {
   registerResourceRoutes(api, {
     requireStudent, reportRateLimit, leaderboardGroup,
     validateCreate, validateStars, bumpResource, markDeleted, markRestored,
-    buildListQuery, buildMineQuery, summariseImpact, AUTO_HIDE_REPORTS,
+    buildListQuery, buildMineQuery, buildContextQuery, summariseImpact, AUTO_HIDE_REPORTS,
     withContextLabel
   });
   api.get('/admin/resources', adminGuard, async (req, res) => {
@@ -386,6 +386,60 @@ describe('Resource Exchange route integration (real MongoDB)', () => {
     }
     assert.deepEqual(statuses, [200, 200, 200, 429],
       `expected [200,200,200,429], got [${statuses.join(',')}]`);
+  });
+
+  // ── TIER 4 — context-bound list ──────────────────────────────────────────
+  test('context: returns only resources for that contextType+contextRef, in cohort', async () => {
+    const a = await asStudent('alice@iitrpr.ac.in');
+    // alice creates 3 phase=vibe and 1 phase=standup
+    const ids = [];
+    for (let i = 0; i < 3; i++) {
+      const r = await request(app).post('/api/resources')
+        .set('Cookie', cookie(a.token)).send(validBody({ title: `vibe-${i}`, contextType: 'phase', contextRef: 'vibe' }));
+      ids.push(r.body.id);
+    }
+    const other = await request(app).post('/api/resources')
+      .set('Cookie', cookie(a.token)).send(validBody({ title: 'standup', contextType: 'phase', contextRef: 'standup' }));
+    // alice fetches phase=vibe context
+    const list = await request(app).get('/api/resources/context/phase/vibe')
+      .set('Cookie', cookie(a.token));
+    assert.equal(list.status, 200);
+    assert.equal(list.body.total, 3, 'should be exactly the 3 vibe resources');
+    assert.ok(list.body.rows.every(r => r.contextRef === 'vibe'));
+  });
+
+  test('context: cohort scoping — different-cohort resource is NOT exposed', async () => {
+    // alice (cohort A) creates one vibe resource
+    const a = await asStudent('alice@iitrpr.ac.in');
+    const r = await request(app).post('/api/resources')
+      .set('Cookie', cookie(a.token)).send(validBody({ title: 'alice-vibe', contextType: 'phase', contextRef: 'vibe' }));
+    // bob is in cohort B
+    const bobDate = new Date('2026-07-10T03:30:00Z');
+    const bob = await Student.create({ name: 'bob', email: 'bob@iitrpr.ac.in', internshipStartDate: bobDate, status: 'active', totalSp: 100 });
+    const bobToken = `tok_${bob._id}`; cookieMap[bobToken] = bob.email;
+    const list = await request(app).get('/api/resources/context/phase/vibe').set('Cookie', cookie(bobToken));
+    assert.equal(list.status, 200);
+    assert.equal(list.body.total, 0, 'bob (different cohort) sees no vibe resources');
+    // alice still sees hers
+    const aliceList = await request(app).get('/api/resources/context/phase/vibe').set('Cookie', cookie(a.token));
+    assert.equal(aliceList.body.total, 1);
+  });
+
+  test('context: invalid shape returns 400 (re-uses create validator)', async () => {
+    const a = await asStudent('alice@iitrpr.ac.in');
+    const bad = await request(app).get('/api/resources/context/nonsense/x')
+      .set('Cookie', cookie(a.token));
+    assert.equal(bad.status, 400, 'unknown contextType must be 400');
+    assert.match(bad.body.error, /contextType must be one of/);
+    // 24-hex mismatch for question context
+    const badQ = await request(app).get('/api/resources/context/question/nothex')
+      .set('Cookie', cookie(a.token));
+    assert.equal(badQ.status, 400);
+  });
+
+  test('context: unauthenticated request is rejected', async () => {
+    const r = await request(app).get('/api/resources/context/phase/vibe');
+    assert.equal(r.status, 401);
   });
 
   // ── ADMIN RESTORE preserves status recomputation ─────────────────────

@@ -176,6 +176,22 @@ export function buildMineQuery(email) {
   return { filter: { 'createdBy.email': String(email).toLowerCase(), deletedAt: null }, sort: { createdAt: -1 }, limit: 200 };
 }
 
+// For Tier 4 "this question / this phase / this tag" contexts. Same shape as
+// buildListQuery but specifically matches on BOTH contextType and contextRef,
+// scoped to the caller's cohort. Sharing the cohort filter stops a standup-
+// phase resource from a neighbouring cohort showing up.
+export function buildContextQuery({ contextType, contextRef, cohort, limit = 12 }) {
+  const filter = { contextType, contextRef, deletedAt: null };
+  // Omit cohort from the filter when caller didn't supply one — otherwise the
+  // null fallback would silently match docs whose cohort field is unset.
+  if (cohort) filter.cohort = cohort;
+  return {
+    filter,
+    sort: { utility: -1, createdAt: -1 },
+    limit: Math.min(50, Math.max(1, Number(limit) || 12))
+  };
+}
+
 // Impact summary for a creator. Input is the full list of their Resources.
 export function summariseImpact(resources) {
   let totalSaves = 0, totalRaters = 0, utility = 0;
