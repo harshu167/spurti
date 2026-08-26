@@ -31,6 +31,7 @@ import { buildTrajectoryState } from './services/trajectory.js';
 import { AUTO_HIDE_REPORTS, bumpResource, markDeleted, markRestored, summariseImpact, validateCreate, validateStars, buildListQuery, buildMineQuery, buildContextQuery, withContextLabel } from './services/resources.js';
 import registerResourceRoutes from './routes/resources.js';
 import registerAdminResourceRoutes from './routes/admin-resources.js';
+import registerMissionRoutes from './routes/missions.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
@@ -1244,6 +1245,10 @@ registerResourceRoutes(api, {
   AUTO_HIDE_REPORTS,
   withContextLabel,
 });
+
+// ---- Recovery Missions (student surface) ----
+// Tier 3: state-machine only — no SP write (that's tier 4).
+registerMissionRoutes(api, { requireStudent });
 
 // ---- Admin moderation ----
 // Routes extracted to ./routes/admin-resources.js — that file owns the

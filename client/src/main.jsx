@@ -344,7 +344,10 @@ function StudentView({ profile, onBack }) {
         ...(ach?.visible ? [['achievements','Achievements', unseenAchievements]] : []),
         ['leaderboard','Leaderboard'],
         ['faq','FAQ']]} />
-      {tab === 'bank' && <SpBank transactions={profile.transactions} />}
+      {tab === 'bank' && <div className="bank-stack">
+        <RecoveryMissionWidget />
+        <SpBank transactions={profile.transactions} />
+      </div>}
       {tab === 'journey' && <MyJourney student={student} goToCommitment={goToCommitment} canCommit={student.eligibleForVibeGoals} openShareFor={setShareCtx} onOpenResourceInExchange={openResourceInExchange} featureEnabled={featureEnabled} />}
       {tab === 'vibe' && student.eligibleForVibeGoals && <Commitments student={student} initialPhase={commitPhase} />}
       {tab === 'spa' && <SpaModule student={student} />}
@@ -1112,6 +1115,155 @@ function Tabs({ tab, setTab, tabs }) {
       {badge > 0 && <span className="tab-badge" aria-label={`${badge} new`}>{badge}</span>}
     </button>
   ))}</nav>;
+}
+
+// ---- Tier 3 — Recovery Mission Widget ---------------------------------------
+//
+// The centerpiece of the recovery-missions feature. Designed against the
+// mentor's previous criticism: "admin creates something, student doesn't
+// reliably see it." Every piece of state shown here comes from the
+// /api/missions/me endpoint on each mount. The widget carries NO local
+// state across remounts, so a browser refresh trivially proves the
+// closed-loop persistence — the test in test/missions-routes.test.js
+// does exactly that.
+//
+// ponytail: deliberately NOT extracted into its own file. main.jsx is
+// the project's single-file React tree (no router, no modules). Keeping
+// the widget inline matches the existing convention; if the SPA ever
+// moves to file-per-component, this can move with everything else.
+function RecoveryMissionWidget() {
+  const [state, setState] = useState({ loading: true });
+  const [busy, setBusy] = useState(false);
+
+  // Always refetch on mount. No cached state. This is the persistence test.
+  useEffect(() => { load(); }, []);
+
+  async function load() {
+    setState({ loading: true });
+    try {
+      const res = await fetch(`${API}/missions/me`, { credentials: 'include' });
+      if (!res.ok) {
+        // 401/403/404 → widget stays hidden. Same pattern as ResourcesPanel's
+        // 403 feature_disabled handler: clean disappearance, no scary error.
+        return setState({ loading: false, hidden: true });
+      }
+      const data = await res.json();
+      if (!data.enabled) return setState({ loading: false, hidden: true });
+      if (!data.assignment) return setState({ loading: false, assignment: null });
+      setState({ loading: false, assignment: data.assignment });
+    } catch (err) {
+      setState({ loading: false, hidden: true });
+    }
+  }
+
+  async function send(event) {
+    setBusy(true);
+    try {
+      const res = await fetch(`${API}/missions/me`, {
+        method: 'PATCH',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ event })
+      });
+      if (!res.ok) {
+        // Bubble the error up as a soft message — never raw JSON.
+        const body = await res.json().catch(() => ({}));
+        setState(s => ({ ...s, error: body.error || `Could not ${event} mission` }));
+      } else {
+        const data = await res.json();
+        setState({ loading: false, assignment: data.assignment });
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (state.loading) return null;     // widget doesn't appear during initial load
+  if (state.hidden) return null;
+  if (!state.assignment) return null; // no mission this week
+
+  const { assignment } = state;
+  const status = assignment.status;
+  const dueLabel = formatDueLabel(assignment.expiresAt);
+
+  // Supportive copy — never "you are falling behind", never "low performer".
+  // Detection score, trigger reason, and cohort rank are admin-only — never
+  // shown to the student. The widget is intentionally unaware of why the
+  // mission exists.
+  let body;
+  let cta;
+  if (status === 'assigned') {
+    body = (
+      <>
+        <p className="rmw-blurb">
+          You're a little behind your usual participation. Complete this small activity to get back on track.
+        </p>
+        <h3 className="rmw-title">{assignment.mission.title}</h3>
+        <p className="rmw-meta">
+          2 of 3 questions required · +{assignment.mission.rewardSp} SP
+        </p>
+        <p className="rmw-due">Due {dueLabel}</p>
+      </>
+    );
+    cta = <button disabled={busy} onClick={() => send('start')}>Start Mission</button>;
+  } else if (status === 'in_progress') {
+    body = (
+      <>
+        <p className="rmw-blurb">
+          You're a little behind your usual participation. Complete this small activity to get back on track.
+        </p>
+        <h3 className="rmw-title">{assignment.mission.title}</h3>
+        <p className="rmw-meta">
+          2 of 3 questions required · +{assignment.mission.rewardSp} SP
+        </p>
+        <p className="rmw-due">Due {dueLabel}</p>
+      </>
+    );
+    cta = <button disabled={busy} onClick={() => send('complete')}>Continue</button>;
+  } else if (status === 'completed') {
+    body = (
+      <>
+        <h3 className="rmw-title">Mission complete</h3>
+        <p className="rmw-meta rmw-meta--done">
+          +{assignment.mission.rewardSp} SP earned
+        </p>
+      </>
+    );
+    cta = null;
+  } else if (status === 'expired') {
+    body = (
+      <>
+        <h3 className="rmw-title">Mission expired</h3>
+        <p className="rmw-blurb">Try again next week.</p>
+      </>
+    );
+    cta = null;
+  }
+
+  return (
+    <section className="panel rmw">
+      <div className="panel-head">
+        <h2>
+          <span className="rmw-eyebrow">🎯 Your Recovery Mission</span>
+        </h2>
+      </div>
+      <div className="rmw-body">
+        {body}
+        {state.error && <p className="rmw-error">{state.error}</p>}
+      </div>
+      {cta && <div className="rmw-cta">{cta}</div>}
+    </section>
+  );
+}
+
+// Render a due-label from the ISO expiresAt — e.g. "Friday" or "Friday 5pm".
+function formatDueLabel(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  if (sameDay) return 'today';
+  return d.toLocaleDateString('en-US', { weekday: 'long' });
 }
 
 function SpBank({ transactions }) {
