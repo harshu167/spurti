@@ -16,6 +16,9 @@
  */
 import RecoveryMission from '../models/RecoveryMission.js';
 import RecoveryAssignment from '../models/RecoveryAssignment.js';
+import MissionAuditEvent from '../models/MissionAuditEvent.js';
+import Student from '../models/Student.js';
+import SPTransaction from '../models/SPTransaction.js';
 
 // ── pure helpers ────────────────────────────────────────────────────────────
 
@@ -141,15 +144,21 @@ export function selectRecoveryCandidates(students, now = new Date(), options = {
 }
 
 // ── intervention selection ─────────────────────────────────────────────────
-
+//
 // Given a list of mission templates and the candidate's engagement
 // context, pick the most relevant enabled template.
 //
 // v1 strategy: pick the first ENABLED template. The novelty is in the
 // DETECTION (adaptive scoring) and the AUDIT (closed loop), not in
-// picking. Tier 7 (or beyond) can add activity-targeting here without
-// changing the schema.
-export function selectIntervention(candidate, templates) {
+// picking.
+//
+// ponytail: `recoveryContext` is the tier-3+ hook. The abstraction was
+// preserved in tier 2 (per the product-defining thread) but is unused
+// at this tier because v1 doesn't have a meaningful signal to feed it.
+// Tier 3+ can fill it (e.g. { topic: 'Decision Trees', kind: 'poll_drop' })
+// and tier 3+ will implement the smarter matcher that uses it. The
+// signature is stable, the implementation is intentionally simple here.
+export function selectIntervention(candidate, templates, recoveryContext = null) {
   if (!templates || templates.length === 0) return null;
   for (const t of templates) {
     if (t && t.enabled) return t;
@@ -223,4 +232,158 @@ export function validateCompletionAttempt(assignment, template, studentHasAnothe
     return { allowed: false, reason: 'template rewardSp out of range' };
   }
   return { allowed: true };
+}
+
+// ── persistence glue (tier 2 — NO SP writes, NO completion logic) ───────────
+//
+// ponytail: tier 2 ships ONLY the assignment-creation path. SP, completion,
+// and audit-on-reward all live in tier 4. The clean separation means a
+// failure in tier 4 (SP write) cannot break tier 2's idempotency guarantee.
+
+// Build the trigger-reason string from a candidate. Pure helper.
+export function formatTriggerReason(candidate) {
+  const sign = candidate.spDelta7d > 0 ? '+' : '';
+  return `7d delta=${sign}${candidate.spDelta7d}; baseline=${candidate.baseline14d}; recent=${candidate.recentSp}; score=${candidate.score.toFixed(1)}`;
+}
+
+// Tier 2's main write path. Returns:
+//   { status: 'created' | 'duplicate' | 'skipped', assignmentId, reason }
+// Idempotent — the unique index makes re-runs a no-op. The audit row is
+// written only on first creation.
+export async function createAssignment({
+  candidate,
+  mission,
+  weekStart,
+  template,            // the mission template (used for rewardSp + windowHours)
+  mode = 'apply'       // 'plan' | 'apply' — tier 2 dry-run support
+}) {
+  if (mode !== 'apply') {
+    // Dry-run / plan mode — never touch the DB. The scheduler prints these.
+    return { status: 'plan', assignmentId: null, reason: 'dry-run' };
+  }
+  if (!candidate || !mission) {
+    return { status: 'skipped', assignmentId: null, reason: 'missing candidate or mission' };
+  }
+
+  // Re-check: did we already create one for this student/week? The unique
+  // index prevents duplicates but checking first lets us return the
+  // existing id cleanly without a duplicate-key round-trip.
+  const existing = await RecoveryAssignment.findOne({
+    studentId: candidate.studentId,
+    weekStart,
+    missionId: mission._id
+  }).lean();
+  if (existing) {
+    return { status: 'duplicate', assignmentId: existing._id, reason: 'already assigned this week' };
+  }
+
+  // The expiry window is template-driven, not hard-coded.
+  const expiresAt = addHours(weekStart, template.windowHours || 24 * 5);
+
+  let created;
+  try {
+    created = await RecoveryAssignment.create({
+      studentId: candidate.studentId,
+      studentEmail: candidate.email,
+      missionId: mission._id,
+      weekStart,
+      status: 'assigned',
+      triggerReason: formatTriggerReason(candidate),
+      spAtDetection: candidate.recentSp ?? 0,
+      spDelta7d: candidate.spDelta7d ?? 0,
+      expiresAt
+    });
+  } catch (err) {
+    // Race: another scheduler run created it between our findOne and our
+    // create. The unique index guarantees we won't get a duplicate; we
+    // surface this as 'duplicate' rather than failing the whole batch.
+    if (err && err.code === 11000) {
+      return { status: 'duplicate', assignmentId: null, reason: 'raced with another run' };
+    }
+    throw err;
+  }
+
+  // One audit row per assignment. NO SP row yet — that's tier 4.
+  await MissionAuditEvent.create({
+    assignmentId: created._id,
+    studentId: candidate.studentId,
+    actorType: 'system',
+    actorEmail: null,
+    kind: 'mission.assigned',
+    payload: {
+      missionId: String(mission._id),
+      missionTitle: mission.title,
+      activityType: mission.activityType,
+      weekStart: weekStart.toISOString(),
+      triggerReason: created.triggerReason
+    }
+  });
+
+  return { status: 'created', assignmentId: created._id, reason: 'assigned' };
+}
+
+// ── data loading for the scheduler ───────────────────────────────────────────
+//
+// ponytail: tier 2 only. No other consumers. If a future tier needs a
+// different window or shape, give it its own loader — don't grow this one.
+
+// Load all active students + their SP-transactions in the recent window.
+// Returns the shape `selectRecoveryCandidates` expects:
+//   [{ _id, email, cohort, cohortRank, totalSp, recentTxns: [...] }]
+// `cohortRank` is computed against the cohort's totalSp distribution (a
+// simple percentile — no leaderboard round-trip needed).
+//
+// windowDays — how many days back of SP transactions to fetch per student
+//              (must be ≥ baselineDays + windowDays inside the detection
+//              function). Tier 2 fetches 21 days to safely cover the 14-day
+//              baseline + 7-day recent window.
+export async function loadStudentsWithRecentTxns({ windowDays = 21, now = new Date() } = {}) {
+  const since = new Date(now.getTime() - windowDays * 24 * 3600 * 1000);
+
+  const students = await Student.find({ status: { $in: ['active', 'yet to onboard'] } }).lean();
+  if (students.length === 0) return [];
+
+  const studentIds = students.map(s => s._id);
+  const txns = await SPTransaction.find({
+    studentId: { $in: studentIds },
+    dateTime: { $gte: since }
+  }).sort({ dateTime: -1 }).lean();
+
+  // Group txns by studentId for fast lookup.
+  const txnsByStudent = new Map();
+  for (const t of txns) {
+    const key = String(t.studentId);
+    if (!txnsByStudent.has(key)) txnsByStudent.set(key, []);
+    txnsByStudent.get(key).push({
+      deltaValue: t.deltaValue,
+      dateTime: t.dateTime
+    });
+  }
+
+  // Compute cohort-rank (percentile within cohort) for each student.
+  // Group by cohort, sort desc by totalSp, give each student its rank
+  // (0 = top, 1 = bottom). We use this as a soft signal in scoring.
+  const byCohort = new Map();
+  for (const s of students) {
+    const c = s.cohort || '_';
+    if (!byCohort.has(c)) byCohort.set(c, []);
+    byCohort.get(c).push(s);
+  }
+  const rankById = new Map();
+  for (const [, group] of byCohort) {
+    group.sort((a, b) => (b.totalSp || 0) - (a.totalSp || 0));
+    group.forEach((s, i) => {
+      // rank as fraction: top = 0, bottom ≈ 1
+      rankById.set(String(s._id), group.length === 1 ? 0.5 : i / (group.length - 1));
+    });
+  }
+
+  return students.map(s => ({
+    _id: s._id,
+    email: s.email,
+    cohort: s.cohort,
+    cohortRank: rankById.get(String(s._id)),
+    totalSp: s.totalSp,
+    recentTxns: txnsByStudent.get(String(s._id)) || []
+  }));
 }

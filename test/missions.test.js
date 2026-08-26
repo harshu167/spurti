@@ -1,10 +1,19 @@
-import { test, describe } from 'node:test';
+import { test, describe, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
+import mongoose from 'mongoose';
 import {
   weekStartUtc, addDays, addHours, spDeltaSince,
   selectRecoveryCandidates, selectIntervention,
-  checkCompletion, validateCompletionAttempt
+  checkCompletion, validateCompletionAttempt,
+  formatTriggerReason, createAssignment
 } from '../server/services/missions.js';
+import RecoveryMission from '../server/models/RecoveryMission.js';
+import RecoveryAssignment from '../server/models/RecoveryAssignment.js';
+import MissionAuditEvent from '../server/models/MissionAuditEvent.js';
+import Student from '../server/models/Student.js';
+import SPTransaction from '../server/models/SPTransaction.js';
+
+const TEST_DB = `mongodb://127.0.0.1:27017/spurti_missions_test_${process.pid}`;
 
 // ── week helpers ────────────────────────────────────────────────────────────
 describe('weekStartUtc', () => {
@@ -223,5 +232,192 @@ describe('selectIntervention', () => {
   });
   test('returns null when no enabled templates', () => {
     assert.equal(selectIntervention({}, [{ enabled: false }]), null);
+  });
+});
+
+// ── Tier 2 — persistence glue (real MongoDB) ────────────────────────────────
+//
+// The non-negotiable tier-2 invariant: idempotency. Running the scheduler
+// twice for the same week must not produce duplicate assignments.
+//
+// All these tests use real MongoDB; the in-memory stub strategy used for
+// Resource Exchange doesn't help here because we need to verify the unique
+// compound index actually catches the duplicate at the DB layer.
+
+async function cleanMissionTables() {
+  await RecoveryAssignment.deleteMany({});
+  await MissionAuditEvent.deleteMany({});
+  await RecoveryMission.deleteMany({});
+  await SPTransaction.deleteMany({});
+  await Student.deleteMany({});
+}
+
+async function mkStudent({ email, totalSp = 100, cohort = 'c1', status = 'active' } = {}) {
+  return Student.create({
+    name: email.split('@')[0],
+    email,
+    cohort,
+    status,
+    totalSp,
+    internshipStartDate: new Date('2026-06-01')
+  });
+}
+
+async function mkTxn(student, daysAgo, deltaValue, category = 'poll') {
+  return SPTransaction.create({
+    studentId: student._id,
+    email: student.email,
+    category,
+    sessionLabel: 's1',
+    deltaMode: 'absolute',
+    deltaValue,
+    appliedDelta: deltaValue,
+    balanceAfter: student.totalSp + deltaValue,
+    reason: 'seed',
+    dateTime: new Date(Date.now() - daysAgo * 86400000)
+  });
+}
+
+describe('Tier 2 — createAssignment (persistence + idempotency)', () => {
+  before(async () => { await mongoose.connect(TEST_DB, { tls: true, tlsAllowInvalidCertificates: true }); });
+  after(async () => {
+    try { await mongoose.connection.dropDatabase(); } catch {}
+    await mongoose.disconnect();
+  });
+  beforeEach(async () => { await cleanMissionTables(); });
+
+  test('first call: creates assignment + audit row', async () => {
+    const student = await mkStudent({ email: 'a@x.com' });
+    await mkTxn(student, 3, 5);  // 1 txn in last 7d
+    await mkTxn(student, 10, 5); // 1 txn in baseline 14-7d
+    const mission = await RecoveryMission.create({
+      title: 'Decision Trees Check-in', description: '', activityType: 'poll_check',
+      activityPayload: { questionIds: ['p1','p2','p3'] }, rewardSp: 3, windowHours: 120, createdBy: 'admin@x.com'
+    });
+    const candidate = {
+      studentId: student._id, email: student.email, cohort: student.cohort,
+      score: 12, spDelta7d: 5, recentSp: 5, baseline14d: 5
+    };
+    const result = await createAssignment({
+      candidate, mission, weekStart: weekStartUtc(), template: mission, mode: 'apply'
+    });
+    assert.equal(result.status, 'created');
+    assert.ok(result.assignmentId);
+    const audit = await MissionAuditEvent.find({ assignmentId: result.assignmentId, kind: 'mission.assigned' });
+    assert.equal(audit.length, 1);
+    assert.equal(audit[0].actorType, 'system');
+  });
+
+  test('second call same week: idempotent (returns duplicate, no new rows)', async () => {
+    const student = await mkStudent({ email: 'a@x.com' });
+    await mkTxn(student, 3, 5);
+    await mkTxn(student, 10, 5);
+    const mission = await RecoveryMission.create({
+      title: 'X', description: '', activityType: 'poll_check',
+      activityPayload: { questionIds: ['p1','p2','p3'] }, rewardSp: 3, windowHours: 120, createdBy: 'admin@x.com'
+    });
+    const candidate = {
+      studentId: student._id, email: student.email, cohort: student.cohort,
+      score: 12, spDelta7d: 5, recentSp: 5, baseline14d: 5
+    };
+    const ws = weekStartUtc();
+    const r1 = await createAssignment({ candidate, mission, weekStart: ws, template: mission });
+    const r2 = await createAssignment({ candidate, mission, weekStart: ws, template: mission });
+    assert.equal(r1.status, 'created');
+    assert.equal(r2.status, 'duplicate');
+    assert.equal(r1.assignmentId.toString(), r2.assignmentId.toString());
+    const count = await RecoveryAssignment.countDocuments({});
+    assert.equal(count, 1, 'exactly one assignment row');
+    const audits = await MissionAuditEvent.countDocuments({ kind: 'mission.assigned' });
+    assert.equal(audits, 1, 'exactly one mission.assigned audit row');
+  });
+
+  test('different week → fresh assignment allowed', async () => {
+    const student = await mkStudent({ email: 'a@x.com' });
+    await mkTxn(student, 3, 5);
+    await mkTxn(student, 10, 5);
+    const mission = await RecoveryMission.create({
+      title: 'X', description: '', activityType: 'poll_check',
+      activityPayload: { questionIds: ['p1','p2','p3'] }, rewardSp: 3, windowHours: 120, createdBy: 'admin@x.com'
+    });
+    const candidate = {
+      studentId: student._id, email: student.email, cohort: student.cohort,
+      score: 12, spDelta7d: 5, recentSp: 5, baseline14d: 5
+    };
+    const thisWeek = weekStartUtc();
+    const nextWeek = addDays(thisWeek, 7);
+    const r1 = await createAssignment({ candidate, mission, weekStart: thisWeek, template: mission });
+    const r2 = await createAssignment({ candidate, mission, weekStart: nextWeek, template: mission });
+    assert.equal(r1.status, 'created');
+    assert.equal(r2.status, 'created');
+    assert.notEqual(r1.assignmentId.toString(), r2.assignmentId.toString());
+  });
+
+  test('mode=plan never writes anything', async () => {
+    const student = await mkStudent({ email: 'a@x.com' });
+    await mkTxn(student, 3, 5);
+    await mkTxn(student, 10, 5);
+    const mission = await RecoveryMission.create({
+      title: 'X', description: '', activityType: 'poll_check',
+      activityPayload: { questionIds: ['p1','p2','p3'] }, rewardSp: 3, windowHours: 120, createdBy: 'admin@x.com'
+    });
+    const candidate = {
+      studentId: student._id, email: student.email, cohort: student.cohort,
+      score: 12, spDelta7d: 5, recentSp: 5, baseline14d: 5
+    };
+    const result = await createAssignment({
+      candidate, mission, weekStart: weekStartUtc(), template: mission, mode: 'plan'
+    });
+    assert.equal(result.status, 'plan');
+    assert.equal(result.assignmentId, null);
+    assert.equal(await RecoveryAssignment.countDocuments({}), 0, 'no assignments in plan mode');
+    assert.equal(await MissionAuditEvent.countDocuments({}), 0, 'no audit rows in plan mode');
+    assert.equal(await RecoveryMission.countDocuments({}), 1, 'mission template itself was pre-seeded, untouched');
+  });
+
+  test('expiry is computed from template.windowHours, not hard-coded', async () => {
+    const student = await mkStudent({ email: 'a@x.com' });
+    await mkTxn(student, 3, 5);
+    await mkTxn(student, 10, 5);
+    const ws = weekStartUtc();
+    const mission = await RecoveryMission.create({
+      title: 'X', description: '', activityType: 'poll_check',
+      activityPayload: { questionIds: ['p1','p2','p3'] }, rewardSp: 3, windowHours: 48, createdBy: 'admin@x.com'
+    });
+    const candidate = {
+      studentId: student._id, email: student.email, cohort: student.cohort,
+      score: 12, spDelta7d: 5, recentSp: 5, baseline14d: 5
+    };
+    const r = await createAssignment({ candidate, mission, weekStart: ws, template: mission });
+    const assignment = await RecoveryAssignment.findById(r.assignmentId).lean();
+    const expected = addHours(ws, 48).getTime();
+    const actual = new Date(assignment.expiresAt).getTime();
+    // within 5 seconds (we may have hit the boundary mid-millisecond)
+    assert.ok(Math.abs(actual - expected) < 5000, `expiresAt should be weekStart + 48h`);
+  });
+
+  test('triggerReason is structured (not a single sentence)', async () => {
+    const student = await mkStudent({ email: 'a@x.com' });
+    await mkTxn(student, 3, 5);
+    await mkTxn(student, 10, 5);
+    const mission = await RecoveryMission.create({
+      title: 'X', description: '', activityType: 'poll_check',
+      activityPayload: { questionIds: ['p1','p2','p3'] }, rewardSp: 3, windowHours: 120, createdBy: 'admin@x.com'
+    });
+    const candidate = {
+      studentId: student._id, email: student.email, cohort: student.cohort,
+      score: 12, spDelta7d: 5, recentSp: 5, baseline14d: 5
+    };
+    await createAssignment({ candidate, mission, weekStart: weekStartUtc(), template: mission });
+    const audits = await MissionAuditEvent.find({ kind: 'mission.assigned' }).lean();
+    assert.match(audits[0].payload.triggerReason, /^7d delta=/);
+  });
+
+  test('selectIntervention accepts recoveryContext (tier-3+ hook)', () => {
+    // Tier 2 doesn't use the third arg, but the signature must accept it
+    // so tier 3+ can fill it without refactoring tier 2.
+    const t = selectIntervention({}, [{ enabled: true }], { topic: 'Decision Trees' });
+    assert.ok(t);
+    assert.equal(selectIntervention({}, [{ enabled: false }], { topic: 'X' }), null);
   });
 });
