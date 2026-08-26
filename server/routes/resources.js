@@ -21,7 +21,7 @@ import ResourceRating from '../models/ResourceRating.js';
 import ResourceReport from '../models/ResourceReport.js';
 import PollRecord from '../models/PollRecord.js';
 import { withAudit, appendAudit } from '../services/audit.js';
-import { requireResourceExchangeEnabled } from '../services/featureControl.js';
+import { requireResourceExchangeEnabled, isResourceExchangeEnabled } from '../services/featureControl.js';
 
 export default function register(api, ctx) {
   const {
@@ -45,6 +45,15 @@ export default function register(api, ctx) {
   // appendAudit and we fall through to the real one from services/audit.js.
   // Tests inject a throwing stub for the rollback-failure cases.
   const _appendAudit = ctx.appendAudit || appendAudit;
+
+  // Tier 8B — student-safe availability endpoint. Always accessible (no
+  // requireResourceExchangeEnabled guard) so the SPA can render the right
+  // initial state. Returns only `{enabled}` — no admin metadata, no
+  // audit, no timestamps. The SPA uses this for the tab decision; 403 on
+  // any other resource API is the runtime source-of-truth fallback.
+  api.get('/resources/availability', async (_req, res) => {
+    res.json({ enabled: await isResourceExchangeEnabled() });
+  });
 
   // Tier 8 — every student route is guarded by requireResourceExchangeEnabled.
   // Tier 8 also closes the audit lifecycle gap: student resource.create

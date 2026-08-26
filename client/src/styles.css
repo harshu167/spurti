@@ -968,3 +968,25 @@ tr.step-alert td { border-color: #f3c9c5; }
 .rcc-audit td { word-break: break-all; }
 .rcc-audit input[type=text] { padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; font: inherit; }
 .rcc-audit select, .rcc-audit input[type=date] { padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; font: inherit; background: #fff; }
+
+/* ---- Tier 8B — Resource Exchange feature toggle (admin) ------------------- */
+/* Tier 8B — monochrome per design directive. No green/red dots, no coloured
+   badges. State is conveyed by text label + outlined button variant only,
+   consistent with the rest of SPURTHI's admin UI. */
+.rcc-feature { background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 14px 18px; margin-bottom: 14px; }
+.rcc-feature-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 6px; }
+.rcc-feature-title { display: flex; gap: 10px; align-items: baseline; font-size: 16px; }
+.rcc-feature-title strong { font-weight: 600; }
+.rcc-feature-state { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); background: #f8fafc; }
+.rcc-feature-desc { margin: 4px 0 8px; font-size: 13px; }
+.rcc-feature-cache { margin: 8px 0 0; font-size: 11px; color: var(--muted); font-style: italic; }
+.rcc-confirm { max-width: 480px; }
+.rcc-confirm p { margin: 0 0 12px; font-size: 14px; line-height: 1.45; }
+.rcc-confirm-reason { display: block; font-size: 12px; color: var(--muted); margin-bottom: 12px; }
+.rcc-confirm-reason input { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; font: inherit; margin-top: 4px; }
+.rcc-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* ---- Tier 8B — student "temporarily unavailable" state -------------------- */
+.rx-disabled { padding: 32px 20px; text-align: center; }
+.rx-disabled p { margin: 4px 0; font-size: 15px; }
+.rx-disabled-sub { font-size: 13px; }

@@ -288,6 +288,44 @@ describe('Tier 8 — Resource Exchange feature control', () => {
   });
 });
 
+// ── Tier 8B — student-safe availability endpoint ──────────────────────────
+describe('Tier 8B — student availability endpoint', () => {
+  test('GET /api/resources/availability returns enabled=true (no auth required)', async () => {
+    await cleanDb();
+    const app = buildApp({});
+    // No auth headers — student-safe endpoint
+    const r = await request(app).get('/api/resources/availability');
+    assert.equal(r.status, 200);
+    assert.equal(r.body.enabled, true);
+  });
+
+  test('GET /api/resources/availability returns enabled=false when disabled', async () => {
+    await cleanDb();
+    await setConfig({ enabled: false, updatedBy: ADMIN_EMAIL });
+    invalidateCache();
+    const app = buildApp({});
+    const r = await request(app).get('/api/resources/availability');
+    assert.equal(r.status, 200);
+    assert.equal(r.body.enabled, false);
+  });
+
+  test('availability endpoint is unauthenticated and never exposes admin metadata', async () => {
+    await cleanDb();
+    await setConfig({ enabled: false, updatedBy: ADMIN_EMAIL });
+    invalidateCache();
+    const app = buildApp({});
+    // Critical: the SPA's initial-render check MUST work even when the
+    // feature is off — otherwise the SPA can't know the feature is off
+    // without hitting a guarded endpoint that returns 403.
+    const r = await request(app).get('/api/resources/availability');
+    assert.equal(r.status, 200);
+    assert.equal(r.body.enabled, false);
+    // And it does NOT expose admin metadata
+    assert.equal(r.body.updatedBy, undefined);
+    assert.equal(r.body.updatedAt, undefined);
+  });
+});
+
 // ── Tier 8 — student resource.create emits resource.created audit ─────────
 describe('Tier 8 — student resource.create audit lifecycle', () => {
   test('student create → resource.created audit row with actor=student', async () => {

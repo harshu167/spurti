@@ -299,6 +299,21 @@ function StudentView({ profile, onBack }) {
   const unseenAchievements = ach?.counts?.unseen || 0;
   // Opening the tab is what counts as seeing them, wherever it is opened from.
   const selectTab = key => { setTab(key); if (key === 'achievements') markAchievementsSeen(); };
+  // Tier 8B — feature toggle. Read once at mount via the public
+  // /api/resources/availability endpoint (no auth required). When admin
+  // disables, the tab disappears immediately. Stale-page handling for an
+  // already-open ResourcesPanel happens INSIDE that component (catches 403
+  // response and calls onResourceExchangeDisabled to flip this state).
+  const [featureEnabled, setFeatureEnabled] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${API}/resources/availability?_=${Date.now()}`)
+      .then(r => r.ok ? r.json() : { enabled: true })
+      .then(j => { if (!cancelled && j && typeof j.enabled === 'boolean') setFeatureEnabled(j.enabled); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+  const onResourceExchangeDisabled = () => setFeatureEnabled(false);
   return (
     <main className="page compact">
       <header className="topbar">
@@ -321,17 +336,21 @@ function StudentView({ profile, onBack }) {
         ['journey','My Journey'],
         ...(student.eligibleForVibeGoals ? [['vibe','Commitments']] : []),
         ['spa','SPA Points'],
-        ['resources','Resource Exchange'],
+        // Tier 8B — Resource Exchange tab disappears when admin has
+        // disabled the feature. If the student is currently on the tab
+        // when disable happens, the ResourcesPanel below flips to a
+        // friendly empty state via onResourceExchangeDisabled.
+        ...(featureEnabled ? [['resources','Resource Exchange']] : []),
         ...(ach?.visible ? [['achievements','Achievements', unseenAchievements]] : []),
         ['leaderboard','Leaderboard'],
         ['faq','FAQ']]} />
       {tab === 'bank' && <SpBank transactions={profile.transactions} />}
-      {tab === 'journey' && <MyJourney student={student} goToCommitment={goToCommitment} canCommit={student.eligibleForVibeGoals} openShareFor={setShareCtx} onOpenResourceInExchange={openResourceInExchange} />}
+      {tab === 'journey' && <MyJourney student={student} goToCommitment={goToCommitment} canCommit={student.eligibleForVibeGoals} openShareFor={setShareCtx} onOpenResourceInExchange={openResourceInExchange} featureEnabled={featureEnabled} />}
       {tab === 'vibe' && student.eligibleForVibeGoals && <Commitments student={student} initialPhase={commitPhase} />}
       {tab === 'spa' && <SpaModule student={student} />}
       {tab === 'achievements' && ach?.visible && <AchievementsPanel student={student} data={ach} />}
       {tab === 'leaderboard' && <LeaderboardPanel student={student} />}
-      {tab === 'resources' && <ResourcesPanel student={student} pendingOpenId={pendingOpenId} onConsumedPending={() => setPendingOpenId(null)} />}
+      {tab === 'resources' && featureEnabled && <ResourcesPanel student={student} pendingOpenId={pendingOpenId} onConsumedPending={() => setPendingOpenId(null)} onResourceExchangeDisabled={onResourceExchangeDisabled} />}
       {tab === 'faq' && <FaqTab />}
       {shareCtx && <CreateResourceSheet email={student.email} onClose={() => setShareCtx(null)} onCreated={() => setShareCtx(null)} initialContext={shareCtx} />}
     </main>
@@ -1253,7 +1272,7 @@ function PhaseGoal({ phaseKey, field, goal, targetText, form, setForm, onSave })
   );
 }
 
-function MyJourney({ student, goToCommitment, canCommit = false, openShareFor, onOpenResourceInExchange }) {
+function MyJourney({ student, goToCommitment, canCommit = false, openShareFor, onOpenResourceInExchange, featureEnabled = true }) {
   const email = student.email;
   const [data, setData] = useState(null);
   const [form, setForm] = useState({});
@@ -1306,7 +1325,7 @@ function MyJourney({ student, goToCommitment, canCommit = false, openShareFor, o
           </div>
           <PhaseGoal phaseKey="standup" field="standupBy" goal={goals.standup} targetText="reach 3,600 Zoom minutes" {...gp} />
           {canCommit && <div className="jr-cardfoot"><button className="jr-stake" onClick={() => goToCommitment('standup')}>🎲 Stake SP →</button></div>}
-          <ResourcesForContext student={student} contextType="phase" contextRef="standup" label="Standup resources" openShareFor={openShareFor} onOpenResourceInExchange={onOpenResourceInExchange} />
+          {featureEnabled && <ResourcesForContext student={student} contextType="phase" contextRef="standup" label="Standup resources" openShareFor={openShareFor} onOpenResourceInExchange={onOpenResourceInExchange} />}
         </section>
 
         {/* ViBe — goal + commitment */}
@@ -1323,7 +1342,7 @@ function MyJourney({ student, goToCommitment, canCommit = false, openShareFor, o
           {vibe.activeCommitment && <div className="jr-splits"><span className="jr-pill amber">🎲 Active commitment: +{vibe.activeCommitment.goalPct}%</span></div>}
           <PhaseGoal phaseKey="vibe" field="vibeBy" goal={goals.vibe} targetText="finish all your ViBe courses" {...gp} />
           {canCommit && <div className="jr-cardfoot"><button className="jr-stake" onClick={() => goToCommitment('vibe')}>🎲 Stake SP →</button></div>}
-          <ResourcesForContext student={student} contextType="phase" contextRef="vibe" label="ViBe resources" openShareFor={openShareFor} onOpenResourceInExchange={onOpenResourceInExchange} />
+          {featureEnabled && <ResourcesForContext student={student} contextType="phase" contextRef="vibe" label="ViBe resources" openShareFor={openShareFor} onOpenResourceInExchange={onOpenResourceInExchange} />}
         </section>
 
         {/* SPA — goal (date) works now; progress data + commitment coming soon */}
@@ -1331,7 +1350,7 @@ function MyJourney({ student, goToCommitment, canCommit = false, openShareFor, o
           <div className="jr-head"><span className="jr-n">3</span><h3>SPA — Matrix Mystics</h3><span className="jr-soon">Data soon</span></div>
           <p className="jr-sub">53-problem set · progress data coming soon</p>
           <PhaseGoal phaseKey="spa" field="spaBy" goal={goals.spa} targetText="solve all 53 problems" {...gp} />
-          <ResourcesForContext student={student} contextType="phase" contextRef="spa" label="SPA resources" openShareFor={openShareFor} onOpenResourceInExchange={onOpenResourceInExchange} />
+          {featureEnabled && <ResourcesForContext student={student} contextType="phase" contextRef="spa" label="SPA resources" openShareFor={openShareFor} onOpenResourceInExchange={onOpenResourceInExchange} />}
         </section>
 
         {/* Projects — goal (date) works now; progress data coming soon */}
@@ -1339,7 +1358,7 @@ function MyJourney({ student, goToCommitment, canCommit = false, openShareFor, o
           <div className="jr-head"><span className="jr-n">4</span><h3>Projects</h3><span className="jr-soon">Data soon</span></div>
           <p className="jr-sub">Pull requests · progress data coming soon</p>
           <PhaseGoal phaseKey="project" field="projectBy" goal={goals.project} targetText="raise your first PR" {...gp} />
-          <ResourcesForContext student={student} contextType="phase" contextRef="project" label="Project resources" openShareFor={openShareFor} onOpenResourceInExchange={onOpenResourceInExchange} />
+          {featureEnabled && <ResourcesForContext student={student} contextType="phase" contextRef="project" label="Project resources" openShareFor={openShareFor} onOpenResourceInExchange={onOpenResourceInExchange} />}
         </section>
       </div>
 
@@ -1820,6 +1839,7 @@ function ResourceControlCenter({ headers }) {
         <button className={sub === 'reports'  ? 'on' : ''} onClick={() => setSub('reports')}>Reports</button>
         <button className={sub === 'audit'    ? 'on' : ''} onClick={() => setSub('audit')}>Audit Log</button>
       </div>
+      <ResourceExchangeToggle headers={headers} />
       {sub === 'resources' && (
         <>
           <div className="rcc-toolbar">
@@ -1875,6 +1895,97 @@ function ResourceControlCenter({ headers }) {
       {sub === 'reports' && <ReportsSubView headers={headers} />}
       {sub === 'audit'   && <AuditSubView headers={headers} />}
     </section>
+  );
+}
+
+// ---- Tier 8B — Feature Control toggle card (admin side) --------------------
+// Single card at the top of the admin Resources sub-tab. Shows the current
+// state and provides Disable / Enable with a small confirmation modal.
+// The 1-minute server-side cache means a toggle is NOT instantaneous for
+// already-connected students; that caveat is surfaced inline.
+function ResourceExchangeToggle({ headers }) {
+  const [cfg, setCfg] = useState(null);
+  const [err, setErr] = useState(null);
+  const [msg, setMsg] = useState(null);
+  const [confirm, setConfirm] = useState(null); // { nextEnabled, reason }
+
+  const load = async () => {
+    setErr(null);
+    try {
+      const r = await fetch(`${API}/admin/resources/config`, { headers });
+      if (!r.ok) throw new Error(await r.text());
+      setCfg(await r.json());
+    } catch (e) { setErr(e.message || 'Network error'); }
+  };
+  useEffect(() => { load(); }, []);
+
+  const apply = async (enabled, reason) => {
+    setErr(null); setMsg(null);
+    const r = await fetch(`${API}/admin/resources/config`, {
+      method: 'PATCH', headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify({ enabled, reason })
+    });
+    if (!r.ok) { setErr(`HTTP ${r.status}: ${await r.text()}`); return; }
+    setMsg(enabled ? 'Re-enabled.' : 'Disabled.');
+    await load();
+  };
+
+  if (err && !cfg) return <div className="rcc-feature"><p className="error">{err}</p></div>;
+  if (!cfg) return <div className="rcc-feature"><p className="muted">Loading feature state…</p></div>;
+
+  const enabled = !!cfg.enabled;
+  return (
+    <div className="rcc-feature">
+      <div className="rcc-feature-head">
+        <div className="rcc-feature-title">
+          <strong>Resource Exchange</strong>
+          <span className="rcc-feature-state">{enabled ? 'Enabled' : 'Disabled'}</span>
+        </div>
+        <button
+          onClick={() => setConfirm({ nextEnabled: !enabled, reason: '' })}
+        >
+          {enabled ? 'Disable' : 'Enable'}
+        </button>
+      </div>
+      <p className="muted rcc-feature-desc">
+        {enabled
+          ? 'Students can discover, share, save, rate and report resources.'
+          : 'Students cannot access Resource Exchange. Admin Control Center remains fully available.'}
+      </p>
+      {msg && <p className="muted rcc-flash">{msg}</p>}
+      {err && <p className="error rcc-flash">{err}</p>}
+      <p className="muted rcc-feature-cache">
+        Changes may take up to 60 seconds to reach active student sessions (server-side cache).
+      </p>
+      {confirm && (
+        <div className="overlay">
+          <section className="modal rcc-confirm">
+            <div className="modal-head">
+              <h2>{confirm.nextEnabled ? 'Enable Resource Exchange?' : 'Disable Resource Exchange?'}</h2>
+              <button className="icon" aria-label="Close confirm" onClick={() => setConfirm(null)}>x</button>
+            </div>
+            <p>{confirm.nextEnabled
+              ? 'Students will regain access to Resource Exchange.'
+              : 'Students will temporarily lose access to Resource Exchange and resource sharing. Existing resources will not be deleted.'}</p>
+            <label className="rcc-confirm-reason">
+              Reason (optional, encouraged)
+              <input
+                value={confirm.reason}
+                onChange={e => setConfirm({ ...confirm, reason: e.target.value })}
+                placeholder={confirm.nextEnabled ? 'e.g. moderation maintenance complete' : 'e.g. moderation maintenance'}
+              />
+            </label>
+            <div className="rcc-confirm-actions">
+              <button className="secondary" onClick={() => setConfirm(null)}>Cancel</button>
+              <button onClick={async () => {
+                  await apply(confirm.nextEnabled, confirm.reason.trim() || '');
+                  setConfirm(null);
+                }}>{confirm.nextEnabled ? 'Enable' : 'Disable'}</button>
+            </div>
+          </section>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -2644,13 +2755,14 @@ const R_CONTEXT_LABEL = { topic: '', question: '', phase: '' };
 // "#backprop", "Standups", or the poll-question text). The SPA never renders
 // raw contextRef — that would expose ObjectIds to students.
 
-function ResourcesPanel({ student, pendingOpenId, onConsumedPending }) {
+function ResourcesPanel({ student, pendingOpenId, onConsumedPending, onResourceExchangeDisabled }) {
   const email = student.email;
   const [sub, setSub] = useState('discover');
   const [rows, setRows] = useState(null);
   const [sort, setSort] = useState('recent');
   const [q, setQ] = useState('');
   const [error, setError] = useState(null);
+  const [featureDisabled, setFeatureDisabled] = useState(false);
   const [openRes, setOpenRes] = useState(null);
   const [showCreate, setShowCreate] = useState(false);
   const [mine, setMine] = useState(null);
@@ -2663,6 +2775,14 @@ function ResourcesPanel({ student, pendingOpenId, onConsumedPending }) {
     try {
       const r = await fetch(url);
       const j = await r.json();
+      // Tier 8B — 403 feature_disabled is the runtime source-of-truth
+      // for stale-page handling. Flip our local state and notify the
+      // parent so the tab disappears across the whole student UI.
+      if (r.status === 403 && j?.error === 'feature_disabled') {
+        setFeatureDisabled(true);
+        if (onResourceExchangeDisabled) onResourceExchangeDisabled();
+        return;
+      }
       if (!r.ok) { setError(j.error || 'Failed to load'); return; }
       if (sub === 'mine') { setMine(j); setRows(j.rows || []); }
       else setRows(j.rows || []);
@@ -2678,6 +2798,23 @@ function ResourcesPanel({ student, pendingOpenId, onConsumedPending }) {
     const r = rows.find(x => String(x._id) === String(pendingOpenId));
     if (r) { setOpenRes(r); onConsumedPending && onConsumedPending(); }
   }, [rows, pendingOpenId, onConsumedPending]);
+
+  // Tier 8B — friendly empty state when admin disabled the feature.
+  // Replaces the list + search + share-create UI with a single short
+  // message. No scary technical error, no toast, no broken UI.
+  if (featureDisabled) {
+    return (
+      <div className="rx">
+        <section className="panel rx-head">
+          <h2>Resource Exchange</h2>
+        </section>
+        <section className="panel empty rx-disabled">
+          <p className="muted">Resource Exchange is temporarily unavailable.</p>
+          <p className="muted rx-disabled-sub">Existing resources remain in place and will return when the feature is re-enabled.</p>
+        </section>
+      </div>
+    );
+  }
 
   return (
     <div className="rx">
