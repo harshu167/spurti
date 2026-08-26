@@ -286,6 +286,11 @@ function StudentView({ profile, onBack }) {
   // future surface (poll cards, journey cards) can also trigger it without
   // re-implementing the modal logic.
   const [shareCtx, setShareCtx] = useState(null);
+  // Tier 4 — phase card "open this resource" → switch to Resource Exchange
+  // and open the detail sheet. State lifted to StudentView so a freshly
+  // mounted ResourcesPanel can pick up an already-open resource.
+  const [pendingOpenId, setPendingOpenId] = useState(null);
+  const openResourceInExchange = (resourceId) => { setTab('resources'); setPendingOpenId(resourceId); };
   const { student } = profile;
   const goToCommitment = ph => { setCommitPhase(ph); setTab('vibe'); };
   // Fetched up here rather than inside the panel because the server decides who
@@ -321,12 +326,12 @@ function StudentView({ profile, onBack }) {
         ['leaderboard','Leaderboard'],
         ['faq','FAQ']]} />
       {tab === 'bank' && <SpBank transactions={profile.transactions} />}
-      {tab === 'journey' && <MyJourney student={student} goToCommitment={goToCommitment} canCommit={student.eligibleForVibeGoals} openShareFor={setShareCtx} onSwitchToResources={() => setTab('resources')} />}
+      {tab === 'journey' && <MyJourney student={student} goToCommitment={goToCommitment} canCommit={student.eligibleForVibeGoals} openShareFor={setShareCtx} onOpenResourceInExchange={openResourceInExchange} />}
       {tab === 'vibe' && student.eligibleForVibeGoals && <Commitments student={student} initialPhase={commitPhase} />}
       {tab === 'spa' && <SpaModule student={student} />}
       {tab === 'achievements' && ach?.visible && <AchievementsPanel student={student} data={ach} />}
       {tab === 'leaderboard' && <LeaderboardPanel student={student} />}
-      {tab === 'resources' && <ResourcesPanel student={student} />}
+      {tab === 'resources' && <ResourcesPanel student={student} pendingOpenId={pendingOpenId} onConsumedPending={() => setPendingOpenId(null)} />}
       {tab === 'faq' && <FaqTab />}
       {shareCtx && <CreateResourceSheet email={student.email} onClose={() => setShareCtx(null)} onCreated={() => setShareCtx(null)} initialContext={shareCtx} />}
     </main>
@@ -1248,7 +1253,7 @@ function PhaseGoal({ phaseKey, field, goal, targetText, form, setForm, onSave })
   );
 }
 
-function MyJourney({ student, goToCommitment, canCommit = false, openShareFor, onSwitchToResources }) {
+function MyJourney({ student, goToCommitment, canCommit = false, openShareFor, onOpenResourceInExchange }) {
   const email = student.email;
   const [data, setData] = useState(null);
   const [form, setForm] = useState({});
@@ -1301,7 +1306,7 @@ function MyJourney({ student, goToCommitment, canCommit = false, openShareFor, o
           </div>
           <PhaseGoal phaseKey="standup" field="standupBy" goal={goals.standup} targetText="reach 3,600 Zoom minutes" {...gp} />
           {canCommit && <div className="jr-cardfoot"><button className="jr-stake" onClick={() => goToCommitment('standup')}>🎲 Stake SP →</button></div>}
-          <ResourcesForContext student={student} contextType="phase" contextRef="standup" label="Standup resources" openShareFor={openShareFor} onSwitchToResources={onSwitchToResources} />
+          <ResourcesForContext student={student} contextType="phase" contextRef="standup" label="Standup resources" openShareFor={openShareFor} onOpenResourceInExchange={onOpenResourceInExchange} />
         </section>
 
         {/* ViBe — goal + commitment */}
@@ -1318,7 +1323,7 @@ function MyJourney({ student, goToCommitment, canCommit = false, openShareFor, o
           {vibe.activeCommitment && <div className="jr-splits"><span className="jr-pill amber">🎲 Active commitment: +{vibe.activeCommitment.goalPct}%</span></div>}
           <PhaseGoal phaseKey="vibe" field="vibeBy" goal={goals.vibe} targetText="finish all your ViBe courses" {...gp} />
           {canCommit && <div className="jr-cardfoot"><button className="jr-stake" onClick={() => goToCommitment('vibe')}>🎲 Stake SP →</button></div>}
-          <ResourcesForContext student={student} contextType="phase" contextRef="vibe" label="ViBe resources" openShareFor={openShareFor} onSwitchToResources={onSwitchToResources} />
+          <ResourcesForContext student={student} contextType="phase" contextRef="vibe" label="ViBe resources" openShareFor={openShareFor} onOpenResourceInExchange={onOpenResourceInExchange} />
         </section>
 
         {/* SPA — goal (date) works now; progress data + commitment coming soon */}
@@ -1326,7 +1331,7 @@ function MyJourney({ student, goToCommitment, canCommit = false, openShareFor, o
           <div className="jr-head"><span className="jr-n">3</span><h3>SPA — Matrix Mystics</h3><span className="jr-soon">Data soon</span></div>
           <p className="jr-sub">53-problem set · progress data coming soon</p>
           <PhaseGoal phaseKey="spa" field="spaBy" goal={goals.spa} targetText="solve all 53 problems" {...gp} />
-          <ResourcesForContext student={student} contextType="phase" contextRef="spa" label="SPA resources" openShareFor={openShareFor} onSwitchToResources={onSwitchToResources} />
+          <ResourcesForContext student={student} contextType="phase" contextRef="spa" label="SPA resources" openShareFor={openShareFor} onOpenResourceInExchange={onOpenResourceInExchange} />
         </section>
 
         {/* Projects — goal (date) works now; progress data coming soon */}
@@ -1334,7 +1339,7 @@ function MyJourney({ student, goToCommitment, canCommit = false, openShareFor, o
           <div className="jr-head"><span className="jr-n">4</span><h3>Projects</h3><span className="jr-soon">Data soon</span></div>
           <p className="jr-sub">Pull requests · progress data coming soon</p>
           <PhaseGoal phaseKey="project" field="projectBy" goal={goals.project} targetText="raise your first PR" {...gp} />
-          <ResourcesForContext student={student} contextType="phase" contextRef="project" label="Project resources" openShareFor={openShareFor} onSwitchToResources={onSwitchToResources} />
+          <ResourcesForContext student={student} contextType="phase" contextRef="project" label="Project resources" openShareFor={openShareFor} onOpenResourceInExchange={onOpenResourceInExchange} />
         </section>
       </div>
 
@@ -2206,7 +2211,7 @@ createRoot(document.getElementById('root')).render(<App />);
 // inside ResourcesPanel (with `createdBy`, save/rate/report wiring) —
 // duplicating it here would drift. Switching tabs achieves the same goal with
 // zero new chrome.
-function ResourcesForContext({ student, contextType, contextRef, label, openShareFor, onSwitchToResources }) {
+function ResourcesForContext({ student, contextType, contextRef, label, openShareFor, onOpenResourceInExchange }) {
   const email = student.email;
   const [rows, setRows] = useState(null);
   const [err, setErr] = useState(null);
@@ -2240,14 +2245,14 @@ function ResourcesForContext({ student, contextType, contextRef, label, openShar
       ) : (
         <div className="rx-ctx-list">
           {visible.map(r => (
-            <button key={r._id} className="rx-ctx-card" onClick={() => onSwitchToResources && onSwitchToResources()} aria-label={`Open ${r.title} in Resource Exchange`}>
+            <button key={r._id} className="rx-ctx-card" onClick={() => onOpenResourceInExchange && onOpenResourceInExchange(r._id)} aria-label={`Open ${r.title} in Resource Exchange`}>
               <span className="muted rx-ctx-card-meta">{contextType === 'phase' ? r.contextRef : r.contextLabel || r.contextRef}</span>
               <span className="rx-ctx-card-title">{r.title}</span>
               {r.description && <span className="muted rx-ctx-card-desc">{r.description.length > 90 ? r.description.slice(0, 87) + '…' : r.description}</span>}
               <span className="muted rx-ctx-card-foot">{(r.ratingCount ? `${(r.ratingSum / r.ratingCount).toFixed(1)} avg · ${r.ratingCount} ratings` : 'no ratings')} · saved by {r.saveCount ?? 0}</span>
             </button>
           ))}
-          {more && <button className="rx-ctx-more muted" onClick={() => onSwitchToResources && onSwitchToResources()}>+{total - 3} more in Resource Exchange</button>}
+          {more && <button className="rx-ctx-more muted" onClick={() => onOpenResourceInExchange && onOpenResourceInExchange(null)}>See all in Resource Exchange</button>}
         </div>
       )}
     </div>
@@ -2259,7 +2264,7 @@ const R_CONTEXT_LABEL = { topic: '', question: '', phase: '' };
 // "#backprop", "Standups", or the poll-question text). The SPA never renders
 // raw contextRef — that would expose ObjectIds to students.
 
-function ResourcesPanel({ student }) {
+function ResourcesPanel({ student, pendingOpenId, onConsumedPending }) {
   const email = student.email;
   const [sub, setSub] = useState('discover');
   const [rows, setRows] = useState(null);
@@ -2284,6 +2289,15 @@ function ResourcesPanel({ student }) {
     } catch (e) { setError(e?.message || 'Network error'); }
   };
   useEffect(() => { load(); }, [sub, sort, q, email]);
+  // Tier 4 — when StudentView hands us a pendingOpenId (a phase card
+  // click requested this exact resource), wait for the list to load, then
+  // open the detail sheet. Falls back to "not found" silently if the id
+  // doesn't match any current row.
+  useEffect(() => {
+    if (!pendingOpenId || !rows) return;
+    const r = rows.find(x => String(x._id) === String(pendingOpenId));
+    if (r) { setOpenRes(r); onConsumedPending && onConsumedPending(); }
+  }, [rows, pendingOpenId, onConsumedPending]);
 
   return (
     <div className="rx">
