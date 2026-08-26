@@ -9,8 +9,6 @@
     "add-students": "node server/scripts/addStudents.js",
     "sync-students": "node server/scripts/syncStudents.js",
     "ingest-session": "node server/scripts/ingestSession.js",
-    "scan-chat-sp": "node server/scripts/scanChatSpReviews.js",
-    "split-22-may": "node server/scripts/split22MaySessions.js",
     "test": "node tests/contest_balance.test.mjs && node tests/contest_smoke.test.mjs",
     "setup": "node scripts/setup.mjs",
     "build": "npm --prefix client run build",

@@ -107,7 +107,6 @@ scripts-dev-only/
 .continue/
 
 # ---- OS junk ----
-.DS_Store
 .AppleDouble
 .LSOverride
 Icon?
@@ -146,6 +145,7 @@ spurti-pr-analysis.md
 # ---- Temp / patch artifacts from local tooling ----
 *.tmp
 *.bak
+*.bak.*
 *.orig
 *.rej
 .gitignore.backup-*
@@ -155,9 +155,15 @@ spurti-pr-analysis.md
 CONTEST_CHANGELOG.md
 CONTEST_INTENT_MAP.md
 
+# ---- Pipeline secrets & runtime backups ----
+pipeline/.env
+server.log
+sp-runs/
+
 # ---- Misc ----
 .history/
 .firebase/
 .vercel/
 .netlify/
 .turbo/
+

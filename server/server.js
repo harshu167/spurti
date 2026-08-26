@@ -3,30 +3,96 @@ import cors from 'cors';
 import mongoose from 'mongoose';
 import path from 'path';
 import fs from 'fs';
-import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 
-import { ALLOW_STUDENT_SEARCH, MONGO_URI, PORT, SPURTI_AUTH_SECRET, SPURTI_COOKIE_SECURE } from './config.js';
+import { ALLOW_STUDENT_SEARCH, MONGO_URI, PORT, SAMAGAMA_AUTH_URL } from './config.js';
 import Student from './models/Student.js';
 import Session from './models/Session.js';
 import AttendanceRecord from './models/AttendanceRecord.js';
-import ChatRecord from './models/ChatRecord.js';
 import PollRecord from './models/PollRecord.js';
 import SPTransaction from './models/SPTransaction.js';
 import SessionEvent from './models/SessionEvent.js';
 import ChatSPReview from './models/ChatSPReview.js';
-import investmentEventRouter from './routes/investmentEvent.js';
 import contestRouter from './routes/contest.js';
 import aiConfigRouter from './routes/aiConfig.js';
 import missionsRouter from './routes/missions.js';
 import { recalculateStudentSp } from './scripts/lib/ingestion.js';
+import { leagueBand, levelFor, legendBadge, leaderboardGroup, groupLabel } from './services/levels.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rootDir = path.resolve(__dirname, '..');
 const clientDist = path.join(rootDir, 'client', 'dist');
 const ADMIN_EMAIL = normalizeEmail(process.env.ADMIN_EMAIL || 'dled@iitrpr.ac.in');
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'vled-local-admin';
-const STUDENT_COOKIE = 'spurti_student';
+
+// Survey triangulation pop-up(s). All driven by env so the form link / mode can
+// change without a client rebuild (the client reads these via /api/config).
+// One config per pop-up; `completedField` is the Student flag it drives, so each
+// pop-up has an independent completion state. `SURVEY` is the original perception
+// survey; `POLL2` is a second, identical pop-up on its own flag.
+function makeSurvey(prefix, completedField) {
+  return {
+    key: completedField.replace(/Completed$/, ''),      // 'survey' | 'poll2'
+    completedField,                                      // Student boolean flag
+    completedAtField: completedField + 'At',             // Student timestamp field
+    enabled: process.env[`${prefix}_ENABLED`] === '1',
+    formUrl: process.env[`${prefix}_FORM_URL`] || '',          // .../viewform  (the published form)
+    emailEntryId: process.env[`${prefix}_EMAIL_ENTRY`] || '',  // e.g. entry.1234567890  (pre-fills email)
+    // Mandatory: 'hard' = blocking modal the student cannot dismiss until they
+    // submit. No SP reward — participation is required, not incentivised.
+    enforcement: process.env[`${prefix}_ENFORCEMENT`] || 'hard',
+    // Auto-expiry. After this instant the modal stops showing (normal Spurti
+    // resumes) with no redeploy. ISO 8601 incl. offset, e.g. 2026-06-30T23:59:59+05:30.
+    deadline: process.env[`${prefix}_DEADLINE`] || '',
+    webhookSecret: process.env[`${prefix}_WEBHOOK_SECRET`] || '', // shared secret for the Apps Script webhook
+    // Apps Script web app that returns {emails:[...]} of actual submitters (private
+    // sheet; secret-gated). Used to verify completion without trusting the client.
+    responsesUrl: process.env[`${prefix}_RESPONSES_URL`] || '',
+    responsesSecret: process.env[`${prefix}_RESPONSES_SECRET`] || '',
+    _subs: { at: 0, set: null }                          // per-survey 60s cache
+  };
+}
+const SURVEY = makeSurvey('SURVEY', 'surveyCompleted');
+const POLL2 = makeSurvey('POLL2', 'poll2Completed');
+const SURVEYS = [SURVEY, POLL2];
+
+// Cached fetch of the submitted-email set from a survey's Apps Script endpoint.
+async function getSubmittedEmails(cfg) {
+  if (!cfg.responsesUrl) return null;
+  if (cfg._subs.set && Date.now() - cfg._subs.at < 60000) return cfg._subs.set;   // 60s cache
+  try {
+    const u = cfg.responsesUrl + (cfg.responsesUrl.includes('?') ? '&' : '?') +
+              'secret=' + encodeURIComponent(cfg.responsesSecret);
+    const r = await fetch(u, { redirect: 'follow' });
+    const j = await r.json();
+    cfg._subs = { at: Date.now(), set: new Set((j.emails || []).map(e => normalizeEmail(e))) };
+    return cfg._subs.set;
+  } catch (err) {
+    console.error(`${cfg.key} responses fetch failed:`, err?.message);
+    return cfg._subs.set; // serve last good cache on failure
+  }
+}
+
+// A survey is active only while enabled AND before its deadline (if set).
+function surveyActive(cfg) {
+  if (!cfg.enabled) return false;
+  if (cfg.deadline) {
+    const cutoff = Date.parse(cfg.deadline);
+    if (!Number.isNaN(cutoff) && Date.now() > cutoff) return false;
+  }
+  return true;
+}
+
+// The env-driven public view of a survey the client needs (form + mode + gate).
+function surveyPublic(cfg) {
+  return {
+    enabled: surveyActive(cfg),
+    formUrl: cfg.formUrl,
+    emailEntryId: cfg.emailEntryId,
+    enforcement: cfg.enforcement,
+    deadline: cfg.deadline
+  };
+}
 
 const app = express();
 const api = express.Router();
@@ -66,52 +132,44 @@ function parseCookies(header = '') {
   }).filter(Boolean));
 }
 
-function signValue(value) {
-  return crypto.createHmac('sha256', SPURTI_AUTH_SECRET).update(value).digest('base64url');
-}
-
-function verifySignedToken(token) {
-  if (!SPURTI_AUTH_SECRET) return null;
-  const [body, signature] = String(token || '').split('.');
-  if (!body || !signature) return null;
-  const expected = signValue(body);
-  const left = Buffer.from(signature);
-  const right = Buffer.from(expected);
-  if (left.length !== right.length || !crypto.timingSafeEqual(left, right)) return null;
+// Validate the student's Samagama session by forwarding their chatengine_token
+// cookie to Samagama's internal auth endpoint. Returns the email on success.
+async function getSamagamaUser(chatengineToken) {
+  if (!chatengineToken) return null;
   try {
-    const payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
-    if (!payload.email || !payload.exp || Date.now() > Number(payload.exp)) return null;
-    return { email: normalizeEmail(payload.email) };
+    const res = await fetch(SAMAGAMA_AUTH_URL, {
+      headers: { cookie: `chatengine_token=${chatengineToken}` },
+      signal: AbortSignal.timeout(5000)
+    });
+    if (!res.ok) return null;
+    return await res.json();
   } catch {
     return null;
   }
 }
 
-function setStudentCookie(res, email) {
-  const body = Buffer.from(JSON.stringify({
-    email: normalizeEmail(email),
-    exp: Date.now() + 24 * 60 * 60 * 1000
-  })).toString('base64url');
-  const value = `${body}.${signValue(body)}`;
-  const secure = SPURTI_COOKIE_SECURE ? '; Secure' : '';
-  res.setHeader('Set-Cookie', `${STUDENT_COOKIE}=${encodeURIComponent(value)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=86400${secure}`);
-}
-
-function clearStudentCookie(res) {
-  res.setHeader('Set-Cookie', `${STUDENT_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
-}
-
-function studentFromCookie(req) {
+async function studentEmailFromRequest(req) {
   const cookies = parseCookies(req.headers.cookie || '');
-  return verifySignedToken(cookies[STUDENT_COOKIE]);
+  const data = await getSamagamaUser(cookies.chatengine_token);
+  // Samagama's /api/auth/me nests the user as { user: { email, ... } };
+  // fall back to a top-level email in case the shape ever flattens.
+  const email = data?.user?.email || data?.email;
+  if (!email) return null;
+  return normalizeEmail(email);
 }
 
-// Populate req.spurtiStudent from the signed cookie on every request so
-// downstream routers (contest, investment-event, future modules) can
+// Populate req.spurtiStudent from the Samagama auth session on every request so
+// downstream routers (contest, missions, future modules) can
 // authenticate without each one re-parsing cookies.
-app.use((req, _res, next) => {
-  const verified = studentFromCookie(req);
-  if (verified) req.spurtiStudent = verified;
+app.use(async (req, _res, next) => {
+  try {
+    const email = await studentEmailFromRequest(req);
+    if (email) {
+      req.spurtiStudent = { email };
+    }
+  } catch (err) {
+    console.error('Error resolving student session:', err?.message);
+  }
   next();
 });
 
@@ -140,9 +198,8 @@ function excusedPayload(student) {
 async function studentPayload(student) {
   const email = student.email;
   const activeFilter = { status: { $ne: 'excused' } };
-  const [transactions, chats, polls, attendance, rankInfo, leaderboard, allStudents] = await Promise.all([
+  const [transactions, polls, attendance, rankInfo, leaderboard, allStudents] = await Promise.all([
     SPTransaction.find({ email }).sort({ dateTime: 1, createdAt: 1 }).lean(),
-    ChatRecord.find({ email }).sort({ sessionLabel: 1 }).lean(),
     PollRecord.find({ email }).sort({ sessionLabel: 1 }).lean(),
     AttendanceRecord.find({ email }).sort({ sessionLabel: 1 }).lean(),
     rankFor(email),
@@ -155,6 +212,18 @@ async function studentPayload(student) {
   const top50Cutoff = allStudents[49]?.totalSp || null;
   const currentIndex = allStudents.findIndex(s => s.email === email);
   const nextStudent = currentIndex > 0 ? allStudents[currentIndex - 1] : null;
+  // Spurti Levels & Trophy Leagues — derived from existing SP (lifetime highest + current).
+  const highestSpEver = Math.max(Number(student.highestSpEver) || 0, Number(student.totalSp) || 0);
+  const myGroup = leaderboardGroup(student.internshipStartDate);
+  const groupStudents = allStudents.filter(s => leaderboardGroup(s.internshipStartDate) === myGroup);
+  const mapRow = (row, index) => ({
+    rank: index + 1,
+    name: row.name,
+    maskedEmail: maskEmail(row.email),
+    totalSp: row.totalSp,
+    level: levelFor(Math.max(Number(row.highestSpEver) || 0, Number(row.totalSp) || 0)),
+    isCurrentStudent: row.email === email
+  });
   return {
     student: {
       _id: String(student._id),
@@ -168,10 +237,17 @@ async function studentPayload(student) {
       excusedReason: student.excusedReason,
       totalSp: student.totalSp,
       rank: rankInfo?.rank || null,
-      cohortSize: rankInfo?.cohortSize || null
+      cohortSize: rankInfo?.cohortSize || null,
+      highestSpEver,
+      level: levelFor(highestSpEver),
+      trophyLeague: leagueBand(student.totalSp),
+      legendBadgeUnlocked: legendBadge(highestSpEver),
+      leaderboardGroup: myGroup,
+      leaderboardGroupLabel: groupLabel(myGroup),
+      surveyCompleted: Boolean(student.surveyCompleted),
+      poll2Completed: Boolean(student.poll2Completed)
     },
     transactions,
-    chats,
     polls,
     attendance,
     cohort: {
@@ -181,13 +257,8 @@ async function studentPayload(student) {
       pointsToTop50: top50Cutoff === null ? null : Math.max(0, top50Cutoff - student.totalSp + 1),
       pointsToNextRank: nextStudent ? Math.max(1, nextStudent.totalSp - student.totalSp + 1) : 0
     },
-    leaderboard: leaderboard.map((row, index) => ({
-      rank: index + 1,
-      name: row.name,
-      maskedEmail: maskEmail(row.email),
-      totalSp: row.totalSp,
-      isCurrentStudent: row.email === email
-    }))
+    leaderboard: leaderboard.map(mapRow),
+    groupLeaderboard: groupStudents.slice(0, 50).map(mapRow)
   };
 }
 
@@ -204,28 +275,17 @@ function adminGuard(req, res, next) {
 
 api.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
-api.get('/config', (_req, res) => res.json({ allowStudentSearch: ALLOW_STUDENT_SEARCH }));
-
-async function authHandoff(req, res) {
-  const verified = verifySignedToken(req.query.token);
-  if (!verified) return res.status(401).send('Invalid or expired Spurti login link.');
-  const student = await Student.findOne({ $or: [{ email: verified.email }, { alternateEmail: verified.email }] }).lean();
-  if (!student) return res.status(404).send('No Spurti record was found for this Samagama account.');
-  if (student.status === 'excused') return res.status(403).send('Your current internship account has been excused. Your previous Spurti record is preserved, and you may come back in the next cohort.');
-  setStudentCookie(res, student.email);
-  res.redirect(req.path.startsWith('/spurti') || req.baseUrl.startsWith('/spurti') ? '/spurti/' : '/');
-}
-
-api.get('/auth', authHandoff);
+api.get('/config', (_req, res) => res.json({
+  allowStudentSearch: ALLOW_STUDENT_SEARCH,
+  survey: surveyPublic(SURVEY),
+  poll2: surveyPublic(POLL2)
+}));
 
 api.get('/me', async (req, res) => {
-  const verified = studentFromCookie(req);
-  if (!verified) return res.status(401).json({ authenticated: false });
-  const student = await Student.findOne({ email: verified.email }).lean();
-  if (!student) {
-    clearStudentCookie(res);
-    return res.status(404).json({ authenticated: false, error: 'Student not found' });
-  }
+  const email = await studentEmailFromRequest(req);
+  if (!email) return res.status(401).json({ authenticated: false });
+  const student = await Student.findOne({ $or: [{ email }, { alternateEmail: email }] }).lean();
+  if (!student) return res.status(404).json({ authenticated: false, error: 'Student not found' });
   if (student.status === 'excused') return res.json({ authenticated: true, ...excusedPayload(student) });
   res.json({ authenticated: true, profile: await studentPayload(student) });
 });
@@ -267,21 +327,96 @@ api.post('/confirm', async (req, res) => {
   res.json(await studentPayload(student));
 });
 
-api.get('/leaderboard', async (_req, res) => {
-  const students = await Student.find({ status: { $ne: 'excused' } }).sort({ totalSp: -1, name: 1 }).limit(50).lean();
-  res.json(students.map((s, i) => ({ rank: i + 1, name: s.name, maskedEmail: maskEmail(s.email), totalSp: s.totalSp })));
+api.get('/leaderboard', async (req, res) => {
+  const type = String(req.query.leaderboardType || 'overall');
+  const filter = { status: { $ne: 'excused' } };
+  if (type === 'my_onboarding_group' && req.query.group) filter.leaderboardGroup = String(req.query.group);
+  const students = await Student.find(filter).sort({ totalSp: -1, name: 1 }).limit(50).lean();
+  res.json(students.map((s, i) => ({
+    rank: i + 1,
+    name: s.name,
+    maskedEmail: maskEmail(s.email),
+    totalSp: s.totalSp,
+    level: levelFor(Math.max(Number(s.highestSpEver) || 0, Number(s.totalSp) || 0)),
+    trophyLeague: leagueBand(s.totalSp)
+  })));
 });
 
 api.post('/ping', async (req, res) => {
   const { email, name, page } = req.body || {};
   const normalized = normalizeEmail(email);
   if (!normalized || !name || !page) return res.status(400).json({ error: 'email, name, page required' });
-  await SessionEvent.create({ email: normalized, name, event: 'page_view', page });
+  // Telemetry is best-effort: an unknown page value (e.g. a new admin sub-page
+  // not yet in the enum) must never crash the request or leak an unhandled
+  // rejection. Drop the write and carry on.
+  try {
+    await SessionEvent.create({ email: normalized, name, event: 'page_view', page });
+  } catch (err) {
+    if (err?.name !== 'ValidationError') console.error('ping log failed:', err?.message);
+  }
   if (page === 'record' || page.startsWith('admin')) {
     liveViewers.set(normalized, { name, page, lastSeen: new Date() });
   }
   res.json({ ok: true });
 });
+
+// --- Survey triangulation (mandatory perception follow-up) ---------------
+// Mark a student's survey as completed for the given survey config. Idempotent;
+// matches on primary or alternate email. No SP is awarded — mandatory, not rewarded.
+async function markSurveyComplete(email, cfg) {
+  const normalized = normalizeEmail(email);
+  if (!normalized) return null;
+  const student = await Student.findOne({ $or: [{ email: normalized }, { alternateEmail: normalized }] });
+  if (!student) return null;
+  if (!student[cfg.completedField]) {
+    student[cfg.completedField] = true;
+    student[cfg.completedAtField] = new Date();
+    await student.save();
+  }
+  return student;
+}
+
+// NOTE: there is deliberately NO client-callable "mark complete" endpoint. The
+// flag is set ONLY by a real Google submission (the webhook below) or the
+// server-side sheet sync, so the modal cannot be dismissed by trust. The client
+// can only READ status via <base>/status and dismiss when it returns completed.
+//
+// Registers /<base>/status + /<base>/webhook for one survey config, so the
+// original survey and poll2 share identical, independent route logic.
+function registerSurveyRoutes(base, cfg) {
+  // Completion check the modal polls and verifies on the "I've submitted" button.
+  // Session-authenticated; reflects only server-set (webhook/sync) completion.
+  api.get(`${base}/status`, async (req, res) => {
+    const email = await studentEmailFromRequest(req);
+    if (!email) return res.json({ completed: false });
+    const student = await Student.findOne({ $or: [{ email }, { alternateEmail: email }] }).lean();
+    if (student?.[cfg.completedField]) return res.json({ completed: true });
+    // On-demand verification against the responses sheet (so the "I've submitted"
+    // button confirms a genuine submission without waiting for the 10-min cron).
+    const subs = await getSubmittedEmails(cfg);
+    if (subs && student) {
+      const e = normalizeEmail(student.email), a = normalizeEmail(student.alternateEmail);
+      if (subs.has(e) || (a && subs.has(a))) {
+        await markSurveyComplete(student.email, cfg);
+        return res.json({ completed: true });
+      }
+    }
+    res.json({ completed: false });
+  });
+
+  // Authoritative confirmation: the Google Form's Apps Script onFormSubmit
+  // trigger POSTs { email, secret } here. Secret-authenticated, not session.
+  api.post(`${base}/webhook`, async (req, res) => {
+    if (!cfg.webhookSecret || String(req.body?.secret || '') !== cfg.webhookSecret) {
+      return res.status(403).json({ ok: false, error: 'forbidden' });
+    }
+    const student = await markSurveyComplete(req.body?.email, cfg);
+    if (!student) return res.status(404).json({ ok: false, error: 'no match', email: normalizeEmail(req.body?.email) });
+    res.json({ ok: true, email: student.email });
+  });
+}
+registerSurveyRoutes('/survey', SURVEY);
+registerSurveyRoutes('/poll2', POLL2);
 
 api.get('/admin/stats', adminGuard, async (_req, res) => {
   const [yetToOnboard, excusedStudents, sessions, txns, activeStudents] = await Promise.all([
@@ -351,78 +486,6 @@ api.get('/admin/student/:id', adminGuard, async (req, res) => {
   const student = await Student.findById(req.params.id).lean();
   if (!student) return res.status(404).json({ error: 'Student not found' });
   res.json(await studentPayload(student));
-});
-
-api.get('/admin/chat-sp-reviews', adminGuard, async (req, res) => {
-  const status = String(req.query.status || 'pending');
-  const query = status === 'all' ? {} : { status };
-  const reviews = await ChatSPReview.find(query).sort({ dateTime: 1, createdAt: 1 }).limit(500).lean();
-  const enriched = reviews.map(r => {
-    const isPct = r.isPercent || false;
-    const displayDelta = isPct ? String(r.delta) + '%' : String(r.delta);
-    return { ...r, displayDelta, isPercent: isPct };
-  });
-  res.json(enriched);
-});
-
-api.post('/admin/chat-sp-reviews/:id/reject', adminGuard, async (req, res) => {
-  const review = await ChatSPReview.findById(req.params.id);
-  if (!review) return res.status(404).json({ error: 'Review not found' });
-  if (review.status !== 'pending') return res.status(409).json({ error: `Review is already ${review.status}` });
-  review.status = 'rejected';
-  review.reviewedBy = normalizeEmail(req.headers['x-admin-email']);
-  review.reviewedAt = new Date();
-  await review.save();
-  res.json(review);
-});
-
-api.post('/admin/chat-sp-reviews/:id/accept', adminGuard, async (req, res) => {
-  const review = await ChatSPReview.findById(req.params.id);
-  if (!review) return res.status(404).json({ error: 'Review not found' });
-  if (review.status !== 'pending') return res.status(409).json({ error: `Review is already ${review.status}` });
-
-  const email = normalizeEmail(req.body?.studentEmail || review.studentEmail);
-  const isPercent = review.isPercent || false;
-  if (!email || !email.includes('@')) return res.status(400).json({ error: 'A matched student email is required before accepting.' });
-
-  // Calculate delta: if percent-based, compute from current balance
-  let delta = Number(req.body?.delta ?? review.delta);
-  if (isPercent) {
-    const last = await SPTransaction.findOne({ email }).sort({ dateTime: -1, createdAt: -1 }).lean();
-    const currentBalance = Number(last?.balanceAfter ?? 0);
-    delta = Math.round(currentBalance * delta / 100);
-  }
-  if (!Number.isFinite(delta) || delta === 0) return res.status(400).json({ error: 'A non-zero SP delta is required.' });
-
-  const student = await Student.findOne({ email });
-  if (!student) return res.status(404).json({ error: 'Student not found' });
-  if (student.status === 'excused') return res.status(409).json({ error: 'Cannot apply new SP to an excused student.' });
-
-  const last = await SPTransaction.findOne({ email }).sort({ dateTime: -1, createdAt: -1 }).lean();
-  const transaction = await SPTransaction.create({
-    email,
-    studentId: student._id,
-    category: 'chat_manual_award',
-    sessionLabel: review.sessionLabel,
-    deltaMode: review.isPercent ? 'percentage' : 'absolute',
-    deltaValue: Number(req.body?.delta ?? review.delta),
-    appliedDelta: delta,
-    balanceAfter: Number(last?.balanceAfter ?? student.totalSp ?? 0) + delta,
-    reason: String(req.body?.reason || review.reason || '').trim() || `Manual chat SP by ${review.issuedByName}.`,
-    dateTime: review.dateTime
-  });
-
-  review.status = 'accepted';
-  review.reviewedBy = normalizeEmail(req.headers['x-admin-email']);
-  review.reviewedAt = new Date();
-  review.studentEmail = email;
-  review.studentId = student._id;
-  review.delta = delta;
-  review.reason = String(req.body?.reason || review.reason || '').trim() || review.reason;
-  review.transactionId = transaction._id;
-  await review.save();
-  await recalculateStudentSp(email);
-  res.json({ review, transaction });
 });
 
 api.get('/admin/active', adminGuard, (_req, res) => {
@@ -514,7 +577,7 @@ api.get('/admin/analytics', adminGuard, async (_req, res) => {
     };
   });
 
-  const categoryTotals = ['initial', 'attendance', 'poll', 'chat', 'manual'].map(category => {
+  const categoryTotals = ['initial', 'attendance', 'poll', 'manual'].map(category => {
     const rows = activeTransactions.filter(t => t.category === category);
     return {
       category,
@@ -576,14 +639,12 @@ function last24Hours(now) {
 
 app.use('/api', api);
 app.use('/spurti/api', api);
-app.use('/spurti/api/investment-event', investmentEventRouter);
 app.use('/spurti/api/contest', contestRouter);
 app.use('/api/contest', contestRouter);
 app.use('/spurti/api/ai-config', aiConfigRouter);
 app.use('/api/ai-config', aiConfigRouter);
 app.use('/spurti/api/missions', missionsRouter);
 app.use('/api/missions', missionsRouter);
-app.get('/spurti/auth', authHandoff);
 
 if (fs.existsSync(clientDist)) {
   app.use('/spurti', express.static(clientDist));
