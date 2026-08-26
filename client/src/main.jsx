@@ -1734,7 +1734,7 @@ function AdminView({ admin, auth, onBack }) {
         <div><p className="eyebrow">Admin Dashboard</p><h1>Spurti Control Room</h1></div>
         <div className="score-card"><span>Yet to onboard</span><strong>{stats?.yetToOnboard ?? admin.yetToOnboard ?? 0}</strong><span className="divider">|</span><span>Active</span><strong>{stats?.activeStudents ?? admin.activeStudents ?? admin.students ?? 0}</strong><span className="divider">|</span><span>Excused</span><strong>{stats?.excusedStudents ?? admin.excusedStudents ?? 0}</strong><em>{stats?.transactions ?? admin.transactions ?? 0} txns</em></div>
       </header>
-      <Tabs tab={tab} setTab={setTab} tabs={[['leaderboard','Leaderboard'], ['attendance','Attendance'], ['live','Live'], ['analytics','Analytics'], ['achievements','Achievements'], ['students','Students']]} />
+      <Tabs tab={tab} setTab={setTab} tabs={[['leaderboard','Leaderboard'], ['attendance','Attendance'], ['live','Live'], ['analytics','Analytics'], ['achievements','Achievements'], ['resources','Resources'], ['students','Students']]} />
       {tab === 'leaderboard' && (
         <section className="panel">
           <div className="panel-head">
@@ -1756,8 +1756,388 @@ function AdminView({ admin, auth, onBack }) {
       {tab === 'achievements' && <AdminAchievements data={analytics?.sharing} reigns={analytics?.reigns} />}
       {tab === 'analytics' && <PipelineHealth data={analytics?.pipeline} />}
       {tab === 'students' && <AllStudentsPanel stats={stats} onStudent={loadStudent} auth={auth} />}
+      {tab === 'resources' && <ResourceControlCenter headers={headers} />}
       {studentProfile && <div className="overlay"><section className="modal wide"><div className="modal-head"><h2>{studentProfile.student.name}</h2><button className="icon" onClick={() => setStudentProfile(null)}>x</button></div><SpBank transactions={studentProfile.transactions} /></section></div>}
     </main>
+  );
+}
+
+// ---- Resource Control Center — Tier 7 Admin SPA ----------------------------
+// Three sub-views: Resources list, Reports queue, Audit Log. Each action
+// from this component goes through the audited admin routes we wired in
+// tier 6 — no direct database touch. Closing the lifecycle:
+//   student create → admin sees in Resources → admin hides → student can no
+//   longer see it → admin sees the action in Audit Log.
+const RCC_FILTERS = [
+  { key: 'all',       label: 'All' },
+  { key: 'active',    label: 'Active' },
+  { key: 'reported',  label: 'Reported' },
+  { key: 'hidden',    label: 'Hidden' },
+  { key: 'deleted',   label: 'Deleted' },
+  { key: 'effective', label: 'Effective' },
+  { key: 'official',  label: 'Official' }
+];
+
+function ResourceControlCenter({ headers }) {
+  const [sub, setSub] = useState('resources');
+  const [rows, setRows] = useState(null);
+  const [filter, setFilter] = useState('all');
+  const [search, setSearch] = useState('');
+  const [err, setErr] = useState(null);
+  const [openId, setOpenId] = useState(null);
+
+  // ── Resources sub-view ───────────────────────────────────────────────────
+  const loadResources = async () => {
+    setErr(null);
+    try {
+      const inclDeleted = filter === 'deleted' ? '&deleted=1' : '';
+      const r = await fetch(`${API}/admin/resources?_=${Date.now()}${inclDeleted}`, { headers });
+      if (!r.ok) throw new Error(await r.text());
+      setRows((await r.json()).rows);
+    } catch (e) { setErr(e.message || 'Network error'); }
+  };
+  useEffect(() => { if (sub === 'resources') loadResources(); }, [sub, filter]);
+
+  const filteredRows = (rows || []).filter(r => {
+    if (!search) return true;
+    const hay = [r.title, r.description, r.tags?.join(' '), r.cohort, r.createdBy?.email, r.createdBy?.name]
+      .filter(Boolean).join(' ').toLowerCase();
+    if (!hay.includes(search.toLowerCase())) return false;
+    // Filter by status / source / reports — coarse client-side; the server
+    // filter chips are an MVP and the route has no per-filter query params yet.
+    if (filter === 'active' && r.deletedAt) return false;
+    if (filter === 'deleted' && !r.deletedAt) return false;
+    if (filter === 'hidden' && !r.deletedAt) return false;
+    if (filter === 'effective' && r.status !== 'effective') return false;
+    if (filter === 'official' && r.source !== 'admin') return false;
+    return true;
+  });
+
+  return (
+    <section className="rcc">
+      <div className="rcc-subtabs">
+        <button className={sub === 'resources' ? 'on' : ''} onClick={() => setSub('resources')}>Resources</button>
+        <button className={sub === 'reports'  ? 'on' : ''} onClick={() => setSub('reports')}>Reports</button>
+        <button className={sub === 'audit'    ? 'on' : ''} onClick={() => setSub('audit')}>Audit Log</button>
+      </div>
+      {sub === 'resources' && (
+        <>
+          <div className="rcc-toolbar">
+            <input
+              className="rcc-search"
+              type="search"
+              placeholder="Search title, topic, owner…"
+              value={search} onChange={e => setSearch(e.target.value)}
+            />
+            <div className="rcc-filters">
+              {RCC_FILTERS.map(f => (
+                <button key={f.key}
+                  className={f.key === filter ? 'rcc-chip on' : 'rcc-chip'}
+                  onClick={() => setFilter(f.key)}>{f.label}</button>
+              ))}
+            </div>
+          </div>
+          {err && <p className="error">{err}</p>}
+          {!rows && <p className="muted">Loading…</p>}
+          {rows && filteredRows.length === 0 && <p className="muted">No resources match these filters.</p>}
+          {rows && filteredRows.length > 0 && (
+            <div className="rcc-list">
+              {filteredRows.map(r => (
+                <div key={r._id} className="rcc-row">
+                  <div className="rcc-row-head">
+                    <h3>{r.title}</h3>
+                    {r.source === 'admin' && <span className="rcc-badge official" title="Admin-created">Official</span>}
+                    {r.deletedAt && <span className="rcc-badge deleted">Deleted</span>}
+                    {r.status === 'effective' && <span className="rcc-badge effective">Effective</span>}
+                  </div>
+                  <p className="rcc-meta">
+                    {r.contextType} · {r.contextRef} · {r.cohort}
+                  </p>
+                  <p className="rcc-owner">By {r.createdBy?.name || r.createdBy?.email}</p>
+                  <p className="rcc-impact">
+                    {r.saveCount} saves · {r.ratingCount > 0 ? `${(r.ratingSum / r.ratingCount).toFixed(1)} ★ · ${r.ratingCount} ratings` : 'no ratings'}
+                  </p>
+                  <button className="secondary" onClick={() => setOpenId(r._id)}>View</button>
+                </div>
+              ))}
+            </div>
+          )}
+          {openId && (
+            <ResourceAdminDetail
+              resourceId={openId}
+              headers={headers}
+              onClose={() => setOpenId(null)}
+              onChanged={() => { setOpenId(null); loadResources(); }}
+            />
+          )}
+        </>
+      )}
+      {sub === 'reports' && <ReportsSubView headers={headers} />}
+      {sub === 'audit'   && <AuditSubView headers={headers} />}
+    </section>
+  );
+}
+
+// Resource detail (admin-side): full info + actions + activity log.
+function ResourceAdminDetail({ resourceId, headers, onClose, onChanged }) {
+  const [r, setR] = useState(null);
+  const [events, setEvents] = useState([]);
+  const [err, setErr] = useState(null);
+  const [msg, setMsg] = useState(null);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(null);
+
+  const load = async () => {
+    setErr(null);
+    try {
+      const [d, a] = await Promise.all([
+        fetch(`${API}/admin/resources/${resourceId}`, { headers }).then(x => x.json()),
+        fetch(`${API}/admin/resources/${resourceId}/audit`, { headers }).then(x => x.json())
+      ]);
+      if (d.error) { setErr(d.error); return; }
+      setR(d); setEvents(a.events || []);
+      setDraft({
+        title: d.title, description: d.description, url: d.url, tags: (d.tags || []).join(', '),
+        contextType: d.contextType, contextRef: d.contextRef, reason: ''
+      });
+    } catch (e) { setErr(e.message || 'Network error'); }
+  };
+  useEffect(() => { load(); }, [resourceId]);
+
+  const callAdmin = async (method, path, body) => {
+    setErr(null); setMsg(null);
+    const r = await fetch(`${API}${path}`, { method, headers: { ...headers, 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+    if (!r.ok) { setErr(`HTTP ${r.status}: ${await r.text()}`); return false; }
+    setMsg('Done.'); return true;
+  };
+
+  if (err && !r) return <div className="overlay"><section className="modal wide"><div className="modal-head"><h2>Resource</h2><button className="icon" onClick={onClose}>x</button></div><p className="error">{err}</p></section></div>;
+  if (!r) return <div className="overlay"><section className="modal"><p className="muted">Loading…</p></section></div>;
+
+  const isDeleted = !!r.deletedAt;
+  return (
+    <div className="overlay">
+      <section className="modal wide rcc-detail">
+        <div className="modal-head">
+          <h2>{r.title}</h2>
+          <button className="icon" aria-label="Close detail" onClick={onClose}>x</button>
+        </div>
+
+        {msg && <p className="muted rcc-flash">{msg}</p>}
+        {err && <p className="error rcc-flash">{err}</p>}
+
+        <div className="rcc-detail-grid">
+          {/* Content */}
+          <div className="rcc-block">
+            <h3>Content</h3>
+            {editing ? (
+              <>
+                <label>Title<input value={draft.title} onChange={e => setDraft({ ...draft, title: e.target.value })} /></label>
+                <label>Description<textarea rows={3} value={draft.description} onChange={e => setDraft({ ...draft, description: e.target.value })} /></label>
+                <label>URL<input value={draft.url} onChange={e => setDraft({ ...draft, url: e.target.value })} /></label>
+                <label>Tags (comma-separated)<input value={draft.tags} onChange={e => setDraft({ ...draft, tags: e.target.value })} /></label>
+                <label>Context type<input value={draft.contextType} onChange={e => setDraft({ ...draft, contextType: e.target.value })} /></label>
+                <label>Context ref<input value={draft.contextRef} onChange={e => setDraft({ ...draft, contextRef: e.target.value })} /></label>
+                <label>Reason<input value={draft.reason} onChange={e => setDraft({ ...draft, reason: e.target.value })} placeholder="why this change?" /></label>
+              </>
+            ) : (
+              <>
+                <p><strong>Type:</strong> {r.type}</p>
+                {r.url && <p><strong>URL:</strong> <a href={r.url} target="_blank" rel="noopener noreferrer">{r.url}</a></p>}
+                {r.description && <p><strong>Description:</strong> {r.description}</p>}
+                {r.tags && r.tags.length > 0 && <p><strong>Tags:</strong> {r.tags.join(', ')}</p>}
+                <p><strong>Context:</strong> {r.contextType} / {r.contextRef}</p>
+                <p><strong>Cohort:</strong> {r.cohort}</p>
+                <p><strong>Source:</strong> {r.source}{r.source === 'admin' && ' (Official)'}</p>
+              </>
+            )}
+          </div>
+
+          {/* Impact */}
+          <div className="rcc-block">
+            <h3>Impact</h3>
+            <p>Saves: <strong>{r.saveCount}</strong></p>
+            <p>Ratings: <strong>{r.ratingCount}</strong></p>
+            <p>Average rating: <strong>{r.ratingCount > 0 ? (r.ratingSum / r.ratingCount).toFixed(2) : '—'}</strong></p>
+            <p>Utility: <strong>{r.utility?.toFixed?.(3) ?? r.utility}</strong></p>
+            <p>Status: <strong>{r.status}</strong></p>
+            {isDeleted && <p><strong>Visibility:</strong> deleted{isDeleted && r.deletedBy ? ` (by ${r.deletedBy})` : ''}</p>}
+          </div>
+        </div>
+
+        <div className="rcc-actions">
+          {editing ? (
+            <>
+              <button onClick={async () => {
+                const body = {
+                  title: draft.title, description: draft.description, url: draft.url,
+                  tags: draft.tags.split(',').map(t => t.trim()).filter(Boolean),
+                  contextType: draft.contextType, contextRef: draft.contextRef,
+                  reason: draft.reason
+                };
+                if (await callAdmin('PATCH', `/admin/resources/${resourceId}`, body)) {
+                  setEditing(false); onChanged();
+                }
+              }}>Save</button>
+              <button className="secondary" onClick={() => setEditing(false)}>Cancel</button>
+            </>
+          ) : (
+            <>
+              <button onClick={() => setEditing(true)} disabled={isDeleted}>Edit</button>
+              <button className="warn" disabled={isDeleted} onClick={async () => {
+                const reason = prompt('Hide reason (spam, outdated, inappropriate…)', 'spam');
+                if (reason == null) return;
+                if (await callAdmin('POST', `/admin/resources/${resourceId}/hide`, { reason })) onChanged();
+              }}>Hide</button>
+              {isDeleted && <button onClick={async () => {
+                if (await callAdmin('POST', `/admin/resources/${resourceId}/restore`)) onChanged();
+              }}>Restore</button>}
+              <button className="danger" onClick={async () => {
+                const reason = prompt('Why delete this resource?', 'wrong topic');
+                if (reason == null) return;
+                if (await callAdmin('DELETE', `/admin/resources/${resourceId}`, { reason })) onChanged();
+              }}>Delete</button>
+            </>
+          )}
+        </div>
+
+        <div className="rcc-block">
+          <h3>Activity</h3>
+          {events.length === 0 && <p className="muted">No audit events yet for this resource.</p>}
+          <ul className="rcc-timeline">
+            {events.map((e, i) => (
+              <li key={i} className={`rcc-ev rcc-ev-${e.kind}`}>
+                <span className="rcc-ev-time">{new Date(e.at).toLocaleString()}</span>
+                <span className="rcc-ev-actor"><strong>{e.actorEmail || e.actorType}</strong></span>
+                <span className="rcc-ev-kind">{e.kind.replace('resource.', '')}</span>
+                {e.payload?.reason && <span className="muted rcc-ev-payload">— {e.payload.reason}</span>}
+                {e.payload?.title && <span className="muted rcc-ev-payload">— {e.payload.title}</span>}
+              </li>
+            ))}
+          </ul>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+// Reports sub-view: open reports first, with quick action buttons.
+function ReportsSubView({ headers }) {
+  const [rows, setRows] = useState(null);
+  const [err, setErr] = useState(null);
+  const [msg, setMsg] = useState(null);
+
+  const load = async () => {
+    setErr(null);
+    try {
+      const r = await fetch(`${API}/admin/reports?_=${Date.now()}`, { headers });
+      if (!r.ok) throw new Error(await r.text());
+      setRows((await r.json()).rows);
+    } catch (e) { setErr(e.message); }
+  };
+  useEffect(() => { load(); }, []);
+
+  const resolve = async (id, action, hideReason) => {
+    setErr(null); setMsg(null);
+    const body = { action };
+    if (action === 'auto_hide') body.hideReason = hideReason || 'spam';
+    const r = await fetch(`${API}/admin/resource-reports/${id}/resolve`, {
+      method: 'POST', headers: { ...headers, 'content-type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+    if (!r.ok) { setErr(`HTTP ${r.status}: ${await r.text()}`); return; }
+    setMsg(`Resolved (${action}).`); load();
+  };
+
+  return (
+    <div className="rcc-reports">
+      {msg && <p className="muted rcc-flash">{msg}</p>}
+      {err && <p className="error rcc-flash">{err}</p>}
+      {!rows && <p className="muted">Loading…</p>}
+      {rows && rows.length === 0 && <p className="muted">No reports yet.</p>}
+      {rows && rows.map(r => (
+        <div key={r._id} className={`rcc-report rcc-report-${r.status}`}>
+          <div className="rcc-report-head">
+            <strong>Resource:</strong> {r.resourceId}
+            {r.status !== 'open' && <span className="rcc-badge">{r.status}</span>}
+          </div>
+          <p className="muted">Reported by <strong>{r.email}</strong> at {new Date(r.createdAt).toLocaleString()}</p>
+          {r.reason && <p>Reason: {r.reason}</p>}
+          {r.status === 'open' && (
+            <div className="rcc-report-actions">
+              <button onClick={() => resolve(r._id, 'dismissed')}>Keep</button>
+              <button className="warn" onClick={() => {
+                const reason = prompt('Why hide?', 'spam');
+                if (reason != null) resolve(r._id, 'auto_hide', reason);
+              }}>Hide</button>
+              <button className="secondary" onClick={() => resolve(r._id, 'actioned')}>Mark actioned</button>
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Audit sub-view: chronological log with simple filters.
+function AuditSubView({ headers }) {
+  const [events, setEvents] = useState(null);
+  const [err, setErr] = useState(null);
+  const [filterActor, setFilterActor] = useState('');
+  const [filterKind, setFilterKind] = useState('');
+  const [filterFrom, setFilterFrom] = useState('');
+
+  const load = async () => {
+    setErr(null);
+    const params = new URLSearchParams();
+    if (filterActor) params.set('actor', filterActor);
+    if (filterKind) params.set('kind', filterKind);
+    if (filterFrom) params.set('from', filterFrom);
+    try {
+      const r = await fetch(`${API}/admin/audit?${params.toString()}`, { headers });
+      if (!r.ok) throw new Error(await r.text());
+      setEvents((await r.json()).events);
+    } catch (e) { setErr(e.message); }
+  };
+  useEffect(() => { load(); }, [filterActor, filterKind, filterFrom]);
+
+  return (
+    <div className="rcc-audit">
+      <div className="rcc-toolbar">
+        <input type="text" placeholder="Actor email" value={filterActor} onChange={e => setFilterActor(e.target.value)} />
+        <select value={filterKind} onChange={e => setFilterKind(e.target.value)}>
+          <option value="">All kinds</option>
+          <option value="resource.created">created</option>
+          <option value="resource.updated">updated</option>
+          <option value="resource.reported">reported</option>
+          <option value="resource.auto_hidden">auto_hidden</option>
+          <option value="resource.hidden">hidden</option>
+          <option value="resource.restored">restored</option>
+          <option value="resource.deleted">deleted</option>
+          <option value="resource.report_resolved">report_resolved</option>
+        </select>
+        <input type="date" value={filterFrom} onChange={e => setFilterFrom(e.target.value)} />
+        <button className="secondary" onClick={load}>Refresh</button>
+      </div>
+      {err && <p className="error">{err}</p>}
+      {!events && <p className="muted">Loading…</p>}
+      {events && events.length === 0 && <p className="muted">No events match these filters.</p>}
+      {events && (
+        <table className="table">
+          <thead><tr><th>Time</th><th>Actor</th><th>Kind</th><th>Resource</th></tr></thead>
+          <tbody>
+            {events.map((e, i) => (
+              <tr key={i}>
+                <td>{new Date(e.at).toLocaleString()}</td>
+                <td>{e.actorEmail || e.actorType}</td>
+                <td>{e.kind.replace('resource.', '')}</td>
+                <td className="muted">{e.resourceId}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
   );
 }
 
