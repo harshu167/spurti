@@ -19,6 +19,7 @@ import RecoveryAssignment from '../server/models/RecoveryAssignment.js';
 import MissionAuditEvent from '../server/models/MissionAuditEvent.js';
 import Student from '../server/models/Student.js';
 import SPTransaction from '../server/models/SPTransaction.js';
+import PollRecord from '../server/models/PollRecord.js';
 import { weekStartUtc } from '../server/services/missions.js';
 
 const TEST_DB = `mongodb://127.0.0.1:27017/spurti_missions_routes_${process.pid}`;
@@ -45,7 +46,7 @@ function startSamagamaStub() {
   });
 }
 
-async function buildApp({ samagama, student }) {
+async function buildApp({ samagama, student, applySpDelta }) {
   const api = express.Router();
   registerMissionRoutes(api, {
     // Inline requireStudent that mirrors server.js semantics.
@@ -74,7 +75,8 @@ async function buildApp({ samagama, student }) {
       if (!s) { res.status(404).json({ error: 'Student not found' }); return null; }
       if (s.status === 'excused') { res.status(403).json({ error: 'Excused' }); return null; }
       return { email, student: s };
-    }
+    },
+    applySpDelta
   });
   const app = express();
   app.use(express.json());
@@ -87,6 +89,7 @@ async function cleanTables() {
   await MissionAuditEvent.deleteMany({});
   await RecoveryMission.deleteMany({});
   await SPTransaction.deleteMany({});
+  await PollRecord.deleteMany({});
   await Student.deleteMany({});
 }
 
@@ -102,9 +105,21 @@ async function mkMission(overrides = {}) {
   return RecoveryMission.create({
     title: 'Decision Trees Check-in', description: '',
     activityType: 'poll_check',
-    activityPayload: { questionIds: ['p1','p2','p3'] },
+    activityPayload: { pollName: 'p1', requiredCount: 2 },
     rewardSp: 3, windowHours: 120, enabled: true,
     createdBy: 'admin@x.com', ...overrides
+  });
+}
+
+async function mkPollRecord(email, pollName, attemptedQuestions = 3) {
+  const responses = [];
+  for (let i = 0; i < attemptedQuestions; i++) {
+    responses.push({ pollName, question: `q${i}`, response: 'a', attempted: true });
+  }
+  return PollRecord.create({
+    email, sessionLabel: pollName,
+    totalQuestions: attemptedQuestions, attemptedQuestions,
+    missedQuestions: 0, responses
   });
 }
 
@@ -167,8 +182,11 @@ describe('Tier 3 — student mission routes (the closed-loop widget)', () => {
     const alice = await mkStudent('alice@iitrpr.ac.in');
     const m = await mkMission();
     await mkAssignment(alice, m);
+    await mkPollRecord(alice.email, m.activityPayload.pollName, 3);
+    // Inject the real applySpDelta so we exercise the actual SP ledger.
+    const { applySpDelta } = await import('../server/services/vibe.js');
 
-    const app = await buildApp({ samagama, student: alice });
+    const app = await buildApp({ samagama, student: alice, applySpDelta });
 
     // First "page load"
     let r = await request(app).get('/api/missions/me').set('Cookie', 'chatengine_token=alice');
@@ -210,7 +228,9 @@ describe('Tier 3 — student mission routes (the closed-loop widget)', () => {
     const alice = await mkStudent('alice@iitrpr.ac.in');
     const m = await mkMission();
     await mkAssignment(alice, m);
-    const app = await buildApp({ samagama, student: alice });
+    await mkPollRecord(alice.email, m.activityPayload.pollName, 3);
+    const { applySpDelta } = await import('../server/services/vibe.js');
+    const app = await buildApp({ samagama, student: alice, applySpDelta });
     await request(app).patch('/api/missions/me').set('Cookie', 'chatengine_token=alice').send({ event: 'start' });
     await request(app).patch('/api/missions/me').set('Cookie', 'chatengine_token=alice').send({ event: 'complete' });
     const second = await request(app).patch('/api/missions/me').set('Cookie', 'chatengine_token=alice').send({ event: 'complete' });
@@ -223,7 +243,9 @@ describe('Tier 3 — student mission routes (the closed-loop widget)', () => {
     const alice = await mkStudent('alice@iitrpr.ac.in');
     const m = await mkMission();
     await mkAssignment(alice, m);
-    const app = await buildApp({ samagama, student: alice });
+    await mkPollRecord(alice.email, m.activityPayload.pollName, 3);
+    const { applySpDelta } = await import('../server/services/vibe.js');
+    const app = await buildApp({ samagama, student: alice, applySpDelta });
     await request(app).patch('/api/missions/me').set('Cookie', 'chatengine_token=alice').send({ event: 'start' });
     await request(app).patch('/api/missions/me').set('Cookie', 'chatengine_token=alice').send({ event: 'complete' });
     const restart = await request(app).patch('/api/missions/me').set('Cookie', 'chatengine_token=alice').send({ event: 'start' });
@@ -266,5 +288,153 @@ describe('Tier 3 — student mission routes (the closed-loop widget)', () => {
     assert.equal(a.status, 'in_progress');
     const audits = await MissionAuditEvent.find({});
     assert.equal(audits.length, 0, 'no separate audit row for start');
+  });
+
+  // ── Tier 4 — SP writes, exactly-once reward, fail-closed rollback ────────
+
+  test('Tier 4 — valid completion moves SP + writes 2 audit rows', async () => {
+    const alice = await mkStudent('alice@iitrpr.ac.in');
+    const m = await mkMission();
+    await mkAssignment(alice, m);
+    await mkPollRecord(alice.email, m.activityPayload.pollName, 3);
+    const { applySpDelta } = await import('../server/services/vibe.js');
+    const app = await buildApp({ samagama, student: alice, applySpDelta });
+    const startSP = (await Student.findOne({ email: alice.email }).lean()).totalSp;
+
+    await request(app).patch('/api/missions/me').set('Cookie', 'chatengine_token=alice').send({ event: 'start' });
+    const r = await request(app).patch('/api/missions/me').set('Cookie', 'chatengine_token=alice').send({ event: 'complete' });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.assignment.status, 'completed');
+    assert.equal(r.body.assignment.rewardApplied, 3);
+
+    const studentAfter = await Student.findOne({ email: alice.email }).lean();
+    assert.equal(studentAfter.totalSp, startSP + 3, 'student SP increased by 3');
+
+    const spTxns = await SPTransaction.find({ email: alice.email, category: 'manual' }).lean();
+    assert.equal(spTxns.length, 1);
+    assert.equal(spTxns[0].appliedDelta, 3);
+    assert.equal(spTxns[0].balanceAfter, startSP + 3);
+    assert.match(spTxns[0].reason, /Recovery mission/);
+
+    const completed = await MissionAuditEvent.find({ kind: 'mission.completed' });
+    assert.equal(completed.length, 1);
+    assert.equal(completed[0].actorType, 'student');
+
+    const rewarded = await MissionAuditEvent.find({ kind: 'mission.rewarded' });
+    assert.equal(rewarded.length, 1);
+    assert.equal(rewarded[0].actorType, 'system');
+    assert.equal(rewarded[0].payload.appliedDelta, 3);
+    assert.equal(rewarded[0].payload.balanceAfter, startSP + 3);
+  });
+
+  test('Tier 4 — same completion submitted twice gives +3 SP only once', async () => {
+    const alice = await mkStudent('alice@iitrpr.ac.in');
+    const m = await mkMission();
+    await mkAssignment(alice, m);
+    await mkPollRecord(alice.email, m.activityPayload.pollName, 3);
+    const { applySpDelta } = await import('../server/services/vibe.js');
+    const app = await buildApp({ samagama, student: alice, applySpDelta });
+    const startSP = (await Student.findOne({ email: alice.email }).lean()).totalSp;
+
+    await request(app).patch('/api/missions/me').set('Cookie', 'chatengine_token=alice').send({ event: 'start' });
+    const r1 = await request(app).patch('/api/missions/me').set('Cookie', 'chatengine_token=alice').send({ event: 'complete' });
+    const r2 = await request(app).patch('/api/missions/me').set('Cookie', 'chatengine_token=alice').send({ event: 'complete' });
+    assert.equal(r1.status, 200);
+    assert.equal(r2.status, 409, 'second completion rejected');
+
+    const studentAfter = await Student.findOne({ email: alice.email }).lean();
+    assert.equal(studentAfter.totalSp, startSP + 3, 'SP moved by exactly 3, not 6');
+
+    const spTxns = await SPTransaction.find({ email: alice.email }).lean();
+    assert.equal(spTxns.length, 1, 'one SPTransaction row only');
+    const completed = await MissionAuditEvent.find({ kind: 'mission.completed' });
+    assert.equal(completed.length, 1, 'one mission.completed audit row');
+    const rewarded = await MissionAuditEvent.find({ kind: 'mission.rewarded' });
+    assert.equal(rewarded.length, 1, 'one mission.rewarded audit row');
+  });
+
+  test('Tier 4 — invalid underlying activity → 422, 0 SP, status remains in_progress', async () => {
+    const alice = await mkStudent('alice@iitrpr.ac.in');
+    const m = await mkMission();
+    await mkAssignment(alice, m);
+    // No PollRecord created → checkCompletion will fail.
+    const { applySpDelta } = await import('../server/services/vibe.js');
+    const app = await buildApp({ samagama, student: alice, applySpDelta });
+    const startSP = (await Student.findOne({ email: alice.email }).lean()).totalSp;
+    await request(app).patch('/api/missions/me').set('Cookie', 'chatengine_token=alice').send({ event: 'start' });
+    const r = await request(app).patch('/api/missions/me').set('Cookie', 'chatengine_token=alice').send({ event: 'complete' });
+    assert.equal(r.status, 422);
+    assert.match(r.body.error, /criteria/i);
+    const studentAfter = await Student.findOne({ email: alice.email }).lean();
+    assert.equal(studentAfter.totalSp, startSP, 'SP unchanged');
+    const a = await RecoveryAssignment.findOne({ studentEmail: alice.email });
+    assert.equal(a.status, 'in_progress', 'assignment status NOT flipped');
+    const audits = await MissionAuditEvent.find({});
+    assert.equal(audits.length, 0, 'no audit rows when criteria not met');
+  });
+
+  test('Tier 4 — expired mission: completion rejected, 0 SP', async () => {
+    const alice = await mkStudent('alice@iitrpr.ac.in');
+    const m = await mkMission();
+    const a = await mkAssignment(alice, m);
+    a.expiresAt = new Date(Date.now() - 1000);
+    a.status = 'in_progress'; // pretend they started it
+    await a.save();
+    await mkPollRecord(alice.email, m.activityPayload.pollName, 3);
+    const { applySpDelta } = await import('../server/services/vibe.js');
+    const app = await buildApp({ samagama, student: alice, applySpDelta });
+    const startSP = (await Student.findOne({ email: alice.email }).lean()).totalSp;
+    const r = await request(app).patch('/api/missions/me').set('Cookie', 'chatengine_token=alice').send({ event: 'complete' });
+    assert.equal(r.status, 409);
+    const studentAfter = await Student.findOne({ email: alice.email }).lean();
+    assert.equal(studentAfter.totalSp, startSP, 'SP unchanged');
+  });
+
+  test('Tier 4 — applySpDelta throwing → assignment rolled back to in_progress', async () => {
+    const alice = await mkStudent('alice@iitrpr.ac.in');
+    const m = await mkMission();
+    await mkAssignment(alice, m);
+    await mkPollRecord(alice.email, m.activityPayload.pollName, 3);
+    const startSP = (await Student.findOne({ email: alice.email }).lean()).totalSp;
+    // Inject a failing applySpDelta — simulates transient DB failure.
+    const failingApplySpDelta = async () => { throw new Error('mongo blip'); };
+    const app = await buildApp({ samagama, student: alice, applySpDelta: failingApplySpDelta });
+    await request(app).patch('/api/missions/me').set('Cookie', 'chatengine_token=alice').send({ event: 'start' });
+    const r = await request(app).patch('/api/missions/me').set('Cookie', 'chatengine_token=alice').send({ event: 'complete' });
+    assert.equal(r.status, 500);
+    // Status rolled back
+    const a = await RecoveryAssignment.findOne({ studentEmail: alice.email });
+    assert.equal(a.status, 'in_progress', 'status rolled back');
+    assert.equal(a.rewardApplied, null, 'rewardApplied cleared');
+    // No SP moved
+    const studentAfter = await Student.findOne({ email: alice.email }).lean();
+    assert.equal(studentAfter.totalSp, startSP, 'SP unchanged');
+    // No audit rows
+    const audits = await MissionAuditEvent.find({});
+    assert.equal(audits.length, 0);
+    // The retry should now succeed (status is in_progress again).
+    const { applySpDelta } = await import('../server/services/vibe.js');
+    const app2 = await buildApp({ samagama, student: alice, applySpDelta });
+    const r2 = await request(app2).patch('/api/missions/me').set('Cookie', 'chatengine_token=alice').send({ event: 'complete' });
+    assert.equal(r2.status, 200, 'retry with real applySpDelta succeeds');
+  });
+
+  test('Tier 4 — complete → refresh → SP delta visible + mission stays completed', async () => {
+    const alice = await mkStudent('alice@iitrpr.ac.in');
+    const m = await mkMission();
+    await mkAssignment(alice, m);
+    await mkPollRecord(alice.email, m.activityPayload.pollName, 3);
+    const { applySpDelta } = await import('../server/services/vibe.js');
+    const app = await buildApp({ samagama, student: alice, applySpDelta });
+
+    await request(app).patch('/api/missions/me').set('Cookie', 'chatengine_token=alice').send({ event: 'start' });
+    await request(app).patch('/api/missions/me').set('Cookie', 'chatengine_token=alice').send({ event: 'complete' });
+    // Refresh
+    const r = await request(app).get('/api/missions/me').set('Cookie', 'chatengine_token=alice');
+    assert.equal(r.body.assignment.status, 'completed');
+    assert.equal(r.body.assignment.rewardApplied, 3);
+    // The SP balance is observable from the Student doc.
+    const student = await Student.findOne({ email: alice.email }).lean();
+    assert.ok(student.totalSp >= 100, 'SP moved');
   });
 });

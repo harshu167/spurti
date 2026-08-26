@@ -181,17 +181,21 @@ export function selectIntervention(candidate, templates, recoveryContext = null)
 // The function is pure — the route layer provides the recent-activity
 // data it needs to evaluate against.
 export function checkCompletion(template, assignment, recentActivity) {
-  const total = 3;
   if (template.activityType === 'poll_check') {
-    const questionIds = (template.activityPayload?.questionIds || []).map(String);
-    if (questionIds.length !== total) {
-      return { ok: false, satisfied: 0, total, reason: 'invalid template (need 3 questionIds)' };
+    const payload = template.activityPayload || {};
+    const requiredCount = Number(payload.requiredCount || 0);
+    if (requiredCount < 1) {
+      return { ok: false, satisfied: 0, total: 0, reason: 'invalid template (need requiredCount ≥ 1)' };
     }
-    const answered = new Set((recentActivity.pollAnswers || []).map(String));
-    let satisfied = 0;
-    for (const qid of questionIds) if (answered.has(qid)) satisfied += 1;
-    const ok = satisfied >= 2;  // 2/3 required per the user's example
-    return { ok, satisfied, total, reason: ok ? 'poll_check 2/3 met' : `${satisfied}/${total} answered` };
+    // recentActivity.pollAnswers is an array of placeholders; we count
+    // its length as the number of attempted questions in the assigned
+    // poll. The route layer builds it from PollRecord.attemptedQuestions.
+    const satisfied = (recentActivity.pollAnswers || []).length;
+    const ok = satisfied >= requiredCount;
+    return {
+      ok, satisfied, total: requiredCount,
+      reason: ok ? `poll_check ${satisfied}/${requiredCount} met` : `${satisfied}/${requiredCount} answered`
+    };
   }
   if (template.activityType === 'contribute') {
     const requiredContext = template.activityPayload || {};

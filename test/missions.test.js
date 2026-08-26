@@ -127,7 +127,7 @@ describe('checkCompletion', () => {
   const pollTemplate = {
     activityType: 'poll_check',
     activityPayload: {
-      questionIds: ['poll-a', 'poll-b', 'poll-c']
+      pollName: 'p1', requiredCount: 2
     }
   };
   const contributeTemplate = {
@@ -135,22 +135,22 @@ describe('checkCompletion', () => {
     activityPayload: { contextType: 'phase', contextRef: 'vibe' }
   };
 
-  test('poll_check: 2/3 answered → ok', () => {
+  test('poll_check: 2/2 answered → ok', () => {
     const result = checkCompletion(pollTemplate, {}, {
-      pollAnswers: ['poll-a', 'poll-b']
+      pollAnswers: ['x', 'x']
     });
     assert.equal(result.ok, true);
     assert.equal(result.satisfied, 2);
   });
-  test('poll_check: 1/3 answered → not ok', () => {
+  test('poll_check: 1/2 answered → not ok', () => {
     const result = checkCompletion(pollTemplate, {}, {
-      pollAnswers: ['poll-a']
+      pollAnswers: ['x']
     });
     assert.equal(result.ok, false);
   });
-  test('poll_check: rejects template with wrong number of questionIds', () => {
-    const bad = { activityType: 'poll_check', activityPayload: { questionIds: ['a'] } };
-    const r = checkCompletion(bad, {}, { pollAnswers: ['a'] });
+  test('poll_check: rejects template with requiredCount missing', () => {
+    const bad = { activityType: 'poll_check', activityPayload: { pollName: 'p1' } };
+    const r = checkCompletion(bad, {}, { pollAnswers: ['x'] });
     assert.equal(r.ok, false);
     assert.match(r.reason, /invalid template/);
   });
