@@ -9,7 +9,7 @@ const resourceReportSchema = new mongoose.Schema({
   resourceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Resource', required: true, index: true },
   email: { type: String, required: true, lowercase: true, trim: true, index: true },
   reason: { type: String, default: '', maxlength: 400 },
-  status: { type: String, enum: ['open', 'dismissed', 'actioned'], default: 'open', index: true },
+  status: { type: String, enum: ['open', 'dismissed', 'actioned', 'auto_hidden'], default: 'open', index: true },
   reviewedBy: { type: String, default: '' },
   reviewedAt: { type: Date, default: null }
 }, { timestamps: true });

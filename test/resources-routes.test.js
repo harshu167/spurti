@@ -637,6 +637,63 @@ describe('Resource Exchange route integration (real MongoDB)', () => {
     assert.equal(ev.payload.reason, 'reviewed ok');
   });
 
+  // ── Tier 7 — atomic auto_hide on resolve ─────────────────────────────────
+  test('admin resolve with auto_hide → resource actually hidden + BOTH audit rows', async () => {
+    await ResourceAuditEvent.deleteMany({});
+    const a = await asStudent('alice-t7-ah@iitrpr.ac.in');
+    const create = await request(app).post('/api/resources').set('Cookie', cookie(a.token)).send(validBody());
+    const id = create.body.id;
+    await request(app).post(`/api/resources/${id}/report`)
+      .set('Cookie', cookie(a.token)).send({ reason: 'spam' });
+    const reportDoc = await ResourceReport.findOne({ resourceId: id });
+
+    const resolve = await request(app).post(`/api/admin/resource-reports/${reportDoc._id}/resolve`)
+      .set('x-admin-email', process.env.ADMIN_EMAIL)
+      .set('x-admin-token', process.env.ADMIN_TOKEN)
+      .send({ action: 'auto_hide', hideReason: 'spam', reason: 'reviewed ok' });
+    assert.equal(resolve.status, 200);
+    assert.equal(resolve.body.action, 'auto_hide');
+
+    // Resource actually hidden (student-visible state changed).
+    const after = await Resource.findById(id).lean();
+    assert.ok(after.deletedAt, 'resource must be hidden after auto_hide');
+
+    // BOTH audit rows persisted in the same operation.
+    const events = await fetchAuditForResource(id);
+    const resolveEv = events.find(e => e.kind === 'resource.report_resolved');
+    const hideEv = events.find(e => e.kind === 'resource.hidden');
+    assert.ok(resolveEv, 'resource.report_resolved event must exist');
+    assert.ok(hideEv, 'resource.hidden event must exist');
+    assert.equal(resolveEv.payload.status, 'auto_hide');
+    assert.equal(hideEv.payload.reason, 'spam');
+    assert.equal(hideEv.payload.source, 'auto_hide-via-resolve');
+  });
+
+  test('admin resolve with auto_hide + audit fail → BOTH report and resource rolled back', async () => {
+    await ResourceAuditEvent.deleteMany({});
+    const a = await asStudent('alice-t7-rb@iitrpr.ac.in');
+    const create = await request(app).post('/api/resources').set('Cookie', cookie(a.token)).send(validBody());
+    const id = create.body.id;
+    await request(app).post(`/api/resources/${id}/report`)
+      .set('Cookie', cookie(a.token)).send({ reason: 'spam' });
+    const reportDoc = await ResourceReport.findOne({ resourceId: id });
+
+    // Use the fail-audit app so the resolve fails atomically.
+    const failApp = buildAdminAppFailAudit();
+    const resolve = await request(failApp).post(`/api/admin/resource-reports/${reportDoc._id}/resolve`)
+      .set('x-admin-email', process.env.ADMIN_EMAIL)
+      .set('x-admin-token', process.env.ADMIN_TOKEN)
+      .send({ action: 'auto_hide', hideReason: 'spam' });
+    assert.equal(resolve.status, 500, 'auto_hide must fail-closed when audit fails');
+
+    // Report still open.
+    const afterReport = await ResourceReport.findById(reportDoc._id).lean();
+    assert.equal(afterReport.status, 'open', 'report must be rolled back to open');
+    // Resource still visible.
+    const afterResource = await Resource.findById(id).lean();
+    assert.equal(afterResource.deletedAt, null, 'resource must NOT be hidden when audit fails');
+  });
+
   // ── Tier 6 — fail-closed tests ────────────────────────────────────────────
   // Build minimal admin/student apps that share the test DB but pass a
   // throwing `appendAudit` to the routes. This proves the rollback path

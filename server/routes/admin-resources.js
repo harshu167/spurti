@@ -270,42 +270,112 @@ export default function registerAdminResourceRoutes(api, ctx) {
     res.json({ id: created._id.toString(), source: 'admin' });
   });
 
-  // Admin resolves an open report. Does NOT touch the resource itself.
-  // Optionally accepts { action: 'auto_hide' } which ALSO hides the resource
-  // in the same audit transaction (so a single admin action resolves both).
+  // Admin resolves an open report.
+  //
+  // Three accepted actions:
+  //   'dismissed'   → mark report resolved, no resource state change. Emits
+  //                  resource.report_resolved only.
+  //   'actioned'    → mark report resolved; admin may separately have taken
+  //                  other action on the resource (e.g. deleted it already).
+  //                  Emits resource.report_resolved only.
+  //   'auto_hide'   → ATOMIC: mark report resolved AND hide the resource.
+  //                  Single withAudit transaction; both mutations and both
+  //                  audit rows happen together. If audit fails, BOTH
+  //                  mutations roll back so the student-visible state
+  //                  stays consistent with the audit log.
+  //                  Emits resource.report_resolved + resource.hidden.
+  //
+  // Tier 7 correction — auto_hide was a documented residual; resolved here
+  // so the admin UI can safely present 'Resolve → Hide resource' as a
+  // single action without lying about the backend's effect.
   api.post('/admin/resource-reports/:reportId/resolve', adminGuard, async (req, res) => {
     const reportId = req.params.reportId;
-    const action = String(req.body?.action || 'dismissed');  // 'dismissed' | 'actioned'
-    const status = ['dismissed', 'actioned'].includes(action) ? action : 'dismissed';
+    const actionRaw = String(req.body?.action || 'dismissed');
+    const VALID_ACTIONS = ['dismissed', 'actioned', 'auto_hide'];
+    if (!VALID_ACTIONS.includes(actionRaw)) return res.status(400).json({ error: 'action must be one of ' + VALID_ACTIONS.join(',') });
     const actor = req.headers['x-admin-email'] || 'admin';
     const reason = String(req.body?.reason || '').slice(0, 400);
+    const hideReason = String(req.body?.hideReason || '').slice(0, 400) || 'other';
+    const validHideReason = AUDIT_HIDE_REASONS.includes(hideReason) ? hideReason : 'other';
 
     const out = await withAudit({
       rollbackLabel: 'admin-resolve-report',
       mutate: async () => {
         const report = await ResourceReport.findById(reportId);
         if (!report) { const e = new Error('Report not found'); e.status = 404; throw e; }
-        if (report.status !== 'open') return { report, noop: true };
-        report.status = status;
+        if (report.status !== 'open') return { report: report.toObject(), noop: true, preImage: null };
+
+        // Capture the report's pre-image for rollback.
+        const reportPreImage = report.toObject();
+
+        // Apply report-resolution mutation.
+        // Status enum on ResourceReport: open | dismissed | actioned | auto_hidden.
+        // We set auto_hidden when the admin chose auto_hide; the two are the
+        // report's resolution state and the action verb respectively.
+        report.status = actionRaw === 'auto_hide' ? 'auto_hidden' : actionRaw;
         report.reviewedBy = actor;
         report.reviewedAt = new Date();
         await report.save();
-        return { report: report.toObject(), noop: false };
+
+        // If auto_hide, also hide the resource. Capture its pre-image too so
+        // a single rollback can restore both sides atomically.
+        let resource = null;
+        let resourcePreImage = null;
+        if (actionRaw === 'auto_hide') {
+          resource = await Resource.findById(report.resourceId);
+          if (resource && !resource.deletedAt) {
+            resourcePreImage = resource.toObject();
+            const muted = markDeleted(resource, actor);
+            resource.deletedAt = muted.deletedAt;
+            resource.deletedBy = muted.deletedBy;
+            await resource.save();
+          }
+        }
+        return {
+          report: report.toObject(),
+          noop: false,
+          reportPreImage,
+          resource: resource ? resource.toObject() : null,
+          resourcePreImage
+        };
       },
-      audit: async ({ report }) => {
+      audit: async ({ report, resource }) => {
         if (!report) return;
+        // Always emit the resolve event.
         await _appendAudit({
           resourceId: report.resourceId, actorType: 'admin', actorEmail: actor,
           kind: 'resource.report_resolved',
-          payload: { reportId: report._id, status, reason: reason || null }
+          payload: { reportId: report._id, status: actionRaw, reason: reason || null }
         });
+        // If auto_hide actually hid something, emit the hidden event too.
+        // Note: if the resource was already deleted, resource is null and
+        // we skip — there's no new state to record.
+        if (actionRaw === 'auto_hide' && resource && resource.deletedAt) {
+          await _appendAudit({
+            resourceId: resource._id, actorType: 'admin', actorEmail: actor,
+            kind: 'resource.hidden',
+            payload: { reason: validHideReason, source: 'auto_hide-via-resolve' }
+          });
+        }
       },
-      rollback: async ({ report }) => {
-        if (!report) return;
-        await ResourceReport.updateOne(
-          { _id: report._id },
-          { $set: { status: 'open', reviewedBy: '', reviewedAt: null } }
-        );
+      rollback: async ({ report, noop, reportPreImage, resource, resourcePreImage }) => {
+        if (noop) return;
+        // Restore the report's prior state.
+        if (reportPreImage) {
+          await ResourceReport.updateOne(
+            { _id: report._id },
+            { $set: {
+                status: reportPreImage.status,
+                reviewedBy: reportPreImage.reviewedBy || '',
+                reviewedAt: reportPreImage.reviewedAt || null
+            } }
+          );
+        }
+        // Restore the resource's prior state if we hid it.
+        if (resource && resourcePreImage) {
+          const { _id, ...rest } = resourcePreImage;
+          await Resource.findByIdAndUpdate(_id, rest);
+        }
       }
     });
     if (!out.ok) {
@@ -315,6 +385,6 @@ export default function registerAdminResourceRoutes(api, ctx) {
       return res.status(out.result?.error?.status || 500).json({ error: msg });
     }
     if (out.result.noop) return res.json({ ok: true, alreadyResolved: true });
-    res.json({ ok: true, status });
+    res.json({ ok: true, action: actionRaw, status: actionRaw });
   });
 }
