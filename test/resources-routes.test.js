@@ -903,17 +903,21 @@ describe('Resource Exchange route integration (real MongoDB)', () => {
   test('student report + audit fail → report row rolled back, 500 returned', async () => {
     await ResourceAuditEvent.deleteMany({});
     const a = await asStudent('alice@iitrpr.ac.in');
-    const failApp = buildStudentAppFailAudit();
-    const created = await request(failApp).post('/api/resources')
+    // Create the resource via the regular app (so the create audit can succeed).
+    // Tier 8 closes the audit lifecycle gap: student create emits resource.created.
+    const created = await request(app).post('/api/resources')
       .set('Cookie', cookie(a.token)).send(validBody());
     assert.equal(created.status, 200);
     const id = created.body.id;
+    // Now attempt the report on the failing app — audit must throw,
+    // route must 500, the report row must be rolled back.
+    const failApp = buildStudentAppFailAudit();
     const report = await request(failApp).post(`/api/resources/${id}/report`)
       .set('Cookie', cookie(a.token)).send({ reason: 'spam' });
     assert.equal(report.status, 500, 'student report must fail-closed when audit fails');
     const reportRows = await ResourceReport.countDocuments({ resourceId: id });
     assert.equal(reportRows, 0, 'rolled back: no orphan ResourceReport should remain');
     const auditRows = await ResourceAuditEvent.countDocuments({ resourceId: id });
-    assert.equal(auditRows, 0);
+    assert.equal(auditRows, 1, 'only the create audit row remains; the report audit row was rolled back');
   });
 });

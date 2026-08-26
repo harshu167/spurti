@@ -21,6 +21,7 @@ import ResourceRating from '../models/ResourceRating.js';
 import ResourceReport from '../models/ResourceReport.js';
 import PollRecord from '../models/PollRecord.js';
 import { withAudit, appendAudit } from '../services/audit.js';
+import { requireResourceExchangeEnabled } from '../services/featureControl.js';
 
 export default function register(api, ctx) {
   const {
@@ -45,23 +46,51 @@ export default function register(api, ctx) {
   // Tests inject a throwing stub for the rollback-failure cases.
   const _appendAudit = ctx.appendAudit || appendAudit;
 
-  api.post('/resources', async (req, res) => {
+  // Tier 8 — every student route is guarded by requireResourceExchangeEnabled.
+  // Tier 8 also closes the audit lifecycle gap: student resource.create
+  // emits resource.created (actor=student), wrapped with withAudit so audit
+  // failure rolls back the create.
+  api.post('/resources', requireResourceExchangeEnabled, async (req, res) => {
     const c = await requireStudent(req, res);
     if (!c) return;
     const v = validateCreate(req.body || {});
     if (!v.ok) return res.status(400).json({ error: v.error });
-    const doc = await Resource.create({
-      ...v.value,
-      createdBy: { email: c.email, name: c.student.name },
-      cohort: leaderboardGroup(c.student.internshipStartDate)
+    let created = null;
+    const out = await withAudit({
+      rollbackLabel: 'student-create-resource',
+      mutate: async () => {
+        created = await Resource.create({
+          ...v.value,
+          createdBy: { email: c.email, name: c.student.name },
+          cohort: leaderboardGroup(c.student.internshipStartDate)
+        });
+        const bumped = bumpResource(created.toObject());
+        Object.assign(created, bumped);
+        await created.save();
+        return { doc: created.toObject() };
+      },
+      audit: async ({ doc }) => {
+        await _appendAudit({
+          resourceId: doc._id, actorType: 'student', actorEmail: c.email,
+          kind: 'resource.created',
+          payload: {
+            title: doc.title, type: doc.type,
+            contextType: doc.contextType, contextRef: doc.contextRef
+          }
+        });
+      },
+      rollback: async ({ doc }) => {
+        // Hard delete the orphan so it never surfaces in lists / mine.
+        try { await Resource.deleteOne({ _id: doc._id }); } catch {}
+      }
     });
-    const bumped = bumpResource(doc.toObject());
-    Object.assign(doc, bumped);
-    await doc.save();
-    res.json({ id: String(doc._id), utility: doc.utility, status: doc.status });
+    if (!out.ok) {
+      return res.status(500).json({ error: 'audit write failed — resource not persisted' });
+    }
+    res.json({ id: String(out.result.doc._id), utility: out.result.doc.utility, status: out.result.doc.status });
   });
 
-  api.get('/resources', async (req, res) => {
+  api.get('/resources', requireResourceExchangeEnabled, async (req, res) => {
     const c = await requireStudent(req, res);
     if (!c) return;
     const q = buildListQuery({
@@ -76,7 +105,7 @@ export default function register(api, ctx) {
     res.json({ rows: labelled, total: labelled.length });
   });
 
-  api.get('/resources/mine', async (req, res) => {
+  api.get('/resources/mine', requireResourceExchangeEnabled, async (req, res) => {
     const c = await requireStudent(req, res);
     if (!c) return;
     const q = buildMineQuery(c.email);
@@ -90,7 +119,7 @@ export default function register(api, ctx) {
   // existing learning surfaces (phase cards in MyJourney today; poll cards
   // when poll UI lands). Returns labelled rows plus a small `total` so the
   // SPA can show a "see all" link only when there are more than the limit.
-  api.get('/resources/context/:type/:ref', async (req, res) => {
+  api.get('/resources/context/:type/:ref', requireResourceExchangeEnabled, async (req, res) => {
     const c = await requireStudent(req, res);
     if (!c) return;
     const contextType = String(req.params.type);
@@ -137,7 +166,7 @@ export default function register(api, ctx) {
     return Promise.all(rows.map(r => withContextLabel(r, async (id) => pollCache.get(String(id)))));
   }
 
-  api.get('/resources/mine/impact', async (req, res) => {
+  api.get('/resources/mine/impact', requireResourceExchangeEnabled, async (req, res) => {
     const c = await requireStudent(req, res);
     if (!c) return;
     const q = buildMineQuery(c.email);
@@ -145,7 +174,7 @@ export default function register(api, ctx) {
     res.json(summariseImpact(rows));
   });
 
-  api.get('/resources/:id', async (req, res) => {
+  api.get('/resources/:id', requireResourceExchangeEnabled, async (req, res) => {
     const c = await requireStudent(req, res);
     if (!c) return;
     const r = await Resource.findOne({ _id: req.params.id, deletedAt: null }).lean();
@@ -159,7 +188,7 @@ export default function register(api, ctx) {
     res.json(labelled);
   });
 
-  api.post('/resources/:id/save', async (req, res) => {
+  api.post('/resources/:id/save', requireResourceExchangeEnabled, async (req, res) => {
     const c = await requireStudent(req, res);
     if (!c) return;
     const r = await Resource.findOne({ _id: req.params.id, deletedAt: null });
@@ -181,7 +210,7 @@ export default function register(api, ctx) {
     res.json({ saved: inserted, saveCount: r.saveCount });
   });
 
-  api.post('/resources/:id/rate', async (req, res) => {
+  api.post('/resources/:id/rate', requireResourceExchangeEnabled, async (req, res) => {
     const c = await requireStudent(req, res);
     if (!c) return;
     const v = validateStars(req.body?.stars);
@@ -218,7 +247,7 @@ export default function register(api, ctx) {
     });
   });
 
-  api.post('/resources/:id/report', async (req, res) => {
+  api.post('/resources/:id/report', requireResourceExchangeEnabled, async (req, res) => {
     const c = await requireStudent(req, res);
     if (!c) return;
     if (reportRateLimit(c.email)) return res.status(429).json({ error: 'Report rate limit exceeded' });
@@ -307,7 +336,7 @@ export default function register(api, ctx) {
     res.json({ ok: true, reported: true });
   });
 
-  api.delete('/resources/:id', async (req, res) => {
+  api.delete('/resources/:id', requireResourceExchangeEnabled, async (req, res) => {
     const c = await requireStudent(req, res);
     if (!c) return;
     const r = await Resource.findById(req.params.id);

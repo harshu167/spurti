@@ -23,6 +23,10 @@ import {
   appendAudit, captureContextChange, captureFieldChanges, buildUpdatePayload,
   withAudit, AUDIT_HIDE_REASONS
 } from '../services/audit.js';
+import {
+  getConfig as getFeatureConfig, setConfig as setFeatureConfig,
+  isResourceExchangeEnabled, invalidateCache as invalidateFeatureCache
+} from '../services/featureControl.js';
 
 export default function registerAdminResourceRoutes(api, ctx) {
   const {
@@ -39,6 +43,57 @@ export default function registerAdminResourceRoutes(api, ctx) {
   // model is small enough to filter/sort in-process for v1.
   // ponytail: simple in-memory filter; sort uses Mongo's sort. With ~3k
   // students and a couple thousand resources, no pagination needed yet.
+  //
+  // Tier 8 — IMPORTANT: the /admin/resources/config routes are registered
+  // FIRST so they match before any of the generic /admin/resources/:id
+  // routes below. Express matches by (method, exact-pattern-first) and the
+  // /:id parameter would happily consume 'config' as a valid id, then fail
+  // to ObjectId-cast it. Keeping config above :id is a load-bearing contract.
+
+  // Feature toggle — read.
+  api.get('/admin/resources/config', adminGuard, async (_req, res) => {
+    const cfg = await getFeatureConfig();
+    res.json(cfg);
+  });
+
+  // Feature toggle — write. Wrapped with withAudit so a failed audit write
+  // rolls back the toggle. Always accessible to admin (even when disabled,
+  // so admin can re-enable).
+  api.patch('/admin/resources/config', adminGuard, async (req, res) => {
+    if (typeof req.body?.enabled !== 'boolean') {
+      return res.status(400).json({ error: 'enabled must be a boolean' });
+    }
+    const enabled = req.body.enabled;
+    const reason = String(req.body.reason || '').slice(0, 400);
+    const actor = req.headers['x-admin-email'] || 'admin';
+
+    const out = await withAudit({
+      rollbackLabel: 'admin-feature-toggle',
+      mutate: async () => {
+        const result = await setFeatureConfig({ enabled, updatedBy: actor });
+        return { previous: result.previous, current: result.current };
+      },
+      audit: async ({ previous, current }) => {
+        const kind = enabled ? 'resource.feature_enabled' : 'resource.feature_disabled';
+        await _appendAudit({
+          resourceId: new mongoose.Types.ObjectId('000000000000000000000000'),
+          actorType: 'admin', actorEmail: actor,
+          kind,
+          payload: {
+            previous: previous.enabled,
+            current: current.enabled,
+            reason: reason || null
+          }
+        });
+      },
+      rollback: async ({ previous }) => {
+        await setFeatureConfig({ enabled: previous.enabled, updatedBy: actor });
+      }
+    });
+    if (!out.ok) return res.status(500).json({ error: 'audit write failed — toggle not persisted' });
+    res.json({ ok: true, enabled: out.result.current.enabled });
+  });
+
   api.get('/admin/resources', adminGuard, async (req, res) => {
     const includeDeleted = String(req.query.deleted || '') === '1';
     const filter = includeDeleted ? {} : { deletedAt: null };
@@ -393,6 +448,12 @@ export default function registerAdminResourceRoutes(api, ctx) {
   // ── Tier 7 — read-only endpoints for the Admin Resource Control Center ─────
   // All read-only. They don't write audit rows; they're pure lookups so an
   // admin can see what's happening without affecting state.
+
+  // IMPORTANT: the /config routes MUST be registered BEFORE the /:id routes.
+  // Express matches the first registered route whose pattern fits; the
+  // generic '/admin/resources/:id' would otherwise catch '/admin/resources/config'
+  // with id='config' and fail with a CastError. ponytail: route order is
+  // a load-bearing contract; keep these grouped above the :id routes.
 
   // Full detail of one resource, including denormalised counters and source.
   api.get('/admin/resources/:id', adminGuard, async (req, res) => {

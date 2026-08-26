@@ -29,7 +29,10 @@ const VALID_KINDS = [
   'resource.hidden',
   'resource.restored',
   'resource.deleted',
-  'resource.report_resolved'
+  'resource.report_resolved',
+  // Tier 8 — feature-level toggle (admin disables / re-enables Resource Exchange).
+  'resource.feature_enabled',
+  'resource.feature_disabled'
 ];
 const VALID_ACTOR_TYPES = ['admin', 'student', 'system'];
 

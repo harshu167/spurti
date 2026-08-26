@@ -70,11 +70,15 @@ describe('buildAuditEvent — envelope validation', () => {
     }), /payload must be an object/);
   });
 
-  test('enforces the 8 valid kinds list', () => {
-    assert.equal(AUDIT_KINDS.length, 8);
+  test('enforces the 10 valid kinds list (8 resource kinds + 2 feature-toggle kinds)', () => {
+    // Tier 8 added resource.feature_enabled and resource.feature_disabled for
+    // the admin feature toggle. The list is now 10.
+    assert.equal(AUDIT_KINDS.length, 10);
     assert.ok(AUDIT_KINDS.includes('resource.created'));
     assert.ok(AUDIT_KINDS.includes('resource.auto_hidden'));
     assert.ok(AUDIT_KINDS.includes('resource.report_resolved'));
+    assert.ok(AUDIT_KINDS.includes('resource.feature_enabled'));
+    assert.ok(AUDIT_KINDS.includes('resource.feature_disabled'));
   });
 
   test('enforces the 3 valid actor types', () => {
