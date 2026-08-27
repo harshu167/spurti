@@ -294,4 +294,64 @@ describe('AUTO_HIDE_REPORTS + validContextTypes', () => {
   test('validContextTypes returns the 3 enum values, not the placeholder', () => {
     assert.deepEqual(validContextTypes(), ['topic', 'question', 'phase']);
   });
+
+  // ── Tier 10 — escapeRegex + parsePagination + feed enums ──────────────────
+  test('T10: escapeRegex neutralises regex metacharacters', async () => {
+    const { escapeRegex, parsePagination, FEED_SORTS, RESOURCE_PAGE_SIZE, RESOURCE_PAGE_MAX,
+      VALID_CATEGORIES, VALID_FILE_TYPES } = await import('../server/services/resources.js');
+    // Metacharacters that would crash or inject if unescaped
+    const dirty = 'a.b*c+d?e^f${g}h(i)j|k[l]m\\n';
+    const safe = escapeRegex(dirty);
+    // The safe version must be a valid regex that matches the original
+    // literally (no metacharacter interpretation)
+    const re = new RegExp('^' + safe + '$');
+    assert.ok(re.test(dirty));
+    // And the unsafe raw metachars (e.g. 'a.b*') do NOT match safe
+    // (because 'a.b*' means 'a' + 0+ 'b' which matches 'a' alone)
+    const greedy = new RegExp('^a.b*$');
+    assert.ok(greedy.test('ab'));  // unsafe version matches shorter strings
+    // Sanity: empty / null input → empty string
+    assert.equal(escapeRegex(''), '');
+    assert.equal(escapeRegex(null), '');
+  });
+
+  test('T10: parsePagination clamps + floors + defaults', async () => {
+    const { parsePagination, RESOURCE_PAGE_SIZE, RESOURCE_PAGE_MAX } = await import('../server/services/resources.js');
+    // defaults
+    assert.equal(parsePagination({}).page, 1);
+    assert.equal(parsePagination({}).limit, RESOURCE_PAGE_SIZE);
+    assert.equal(parsePagination({}).skip, 0);
+    // custom values
+    assert.equal(parsePagination({ page: 3, limit: 25 }).page, 3);
+    assert.equal(parsePagination({ page: 3, limit: 25 }).skip, 50);
+    // floor (page<1 → 1, limit<1 → RESOURCE_PAGE_SIZE)
+    assert.equal(parsePagination({ page: -5, limit: 0 }).page, 1);
+    assert.equal(parsePagination({ page: -5, limit: 0 }).limit, RESOURCE_PAGE_SIZE);
+    // cap (limit>MAX → MAX)
+    assert.equal(parsePagination({ limit: 999 }).limit, RESOURCE_PAGE_MAX);
+  });
+
+  test('T10: FEED_SORTS has the three feeds PR #168 advertises', async () => {
+    const { FEED_SORTS } = await import('../server/services/resources.js');
+    assert.ok(FEED_SORTS.latest);
+    assert.ok(FEED_SORTS.trending);
+    assert.ok(FEED_SORTS.downloads);
+    // trending sorts by likeCount
+    assert.ok(FEED_SORTS.trending.likeCount === -1);
+    // downloads sorts by downloadCount
+    assert.ok(FEED_SORTS.downloads.downloadCount === -1);
+  });
+
+  test('T10: VALID_CATEGORIES / VALID_FILE_TYPES cover the curated set', async () => {
+    const { VALID_CATEGORIES, VALID_FILE_TYPES } = await import('../server/services/resources.js');
+    // Empty string is allowed (= "uncategorised") so pre-tier-10 rows
+    // remain valid
+    assert.equal(VALID_CATEGORIES[0], '');
+    assert.equal(VALID_FILE_TYPES[0], '');
+    // Spot-check a few categories + types from PR #168's enum
+    assert.ok(VALID_CATEGORIES.includes('Programming'));
+    assert.ok(VALID_CATEGORIES.includes('DSA'));
+    assert.ok(VALID_FILE_TYPES.includes('PDF'));
+    assert.ok(VALID_FILE_TYPES.includes('YouTube'));
+  });
 });

@@ -278,3 +278,45 @@ function bumpRestoredFields(res) {
   const out = bumpResource(res);
   return { utility: out.utility, status: out.status };
 }
+
+// ── Tier 10 — structured categories + file types + feed sort + escapeRegex ──
+//
+// PR #168 ships a closed enum of categories + file types. We mirror the
+// shape (admin-curated enum) but the values are open-string by default
+// to keep the existing tag-based workflow working. The validateCreate
+// path stays unchanged.
+export const VALID_CATEGORIES = [
+  '', 'Programming', 'DSA', 'Java', 'Python', 'React', 'Node',
+  'Machine Learning', 'Operating System', 'DBMS', 'Computer Networks',
+  'Mathematics', 'Interview Preparation', 'Placement', 'Others'
+];
+export const VALID_FILE_TYPES = [
+  '', 'PDF', 'PPT', 'Notes', 'Google Drive', 'YouTube', 'GitHub',
+  'Article', 'Documentation', 'ZIP', 'Others'
+];
+
+// Escape user input before it becomes a regex. PR #168 ships this; we
+// adopt it as a defensive measure even though our current search uses
+// Mongo's $regex with bounded inputs. Cheap, prevents future bugs.
+export function escapeRegex(s) {
+  return String(s == null ? '' : s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Tier 10 feed sort. Same shape as PR #168. Sort is the only knob; the
+// route layer picks based on ?feed= query param.
+export const FEED_SORTS = {
+  latest:    { createdAt: -1 },
+  trending:  { likeCount: -1, createdAt: -1 },
+  downloads: { downloadCount: -1, createdAt: -1 }
+};
+// Default cap raised from 50 → 50 unchanged. New: pagination params.
+export const RESOURCE_PAGE_SIZE = 50;
+export const RESOURCE_PAGE_MAX  = 100;
+
+// Pure: parse + clamp page/limit query params. Returns a safe
+// (skip, limit, page) tuple. No DB access.
+export function parsePagination({ page, limit } = {}) {
+  const p = Math.max(1, parseInt(page, 10) || 1);
+  const l = Math.min(RESOURCE_PAGE_MAX, Math.max(1, parseInt(limit, 10) || RESOURCE_PAGE_SIZE));
+  return { page: p, limit: l, skip: (p - 1) * l };
+}

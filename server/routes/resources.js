@@ -16,6 +16,8 @@
  * auth, in-memory samagama stub, etc) without booting server.js.
  */
 import Resource from '../models/Resource.js';
+import ResourceLike from '../models/ResourceLike.js';
+import ResourceDownload from '../models/ResourceDownload.js';
 import ResourceSave from '../models/ResourceSave.js';
 import ResourceRating from '../models/ResourceRating.js';
 import ResourceReport from '../models/ResourceReport.js';
@@ -102,16 +104,50 @@ export default function register(api, ctx) {
   api.get('/resources', requireResourceExchangeEnabled, async (req, res) => {
     const c = await requireStudent(req, res);
     if (!c) return;
-    const q = buildListQuery({
-      q: req.query.q,
-      contextType: req.query.contextType,
-      sort: req.query.sort,
-      limit: req.query.limit,
-      cohort: leaderboardGroup(c.student.internshipStartDate)
+    // Tier 10 — feed param picks the sort; defaults to 'latest' which
+    // matches PR #168. Pagination is opt-in via ?page / ?limit.
+    const feed = String(req.query.feed || 'latest');
+    const sort = FEED_SORTS[feed] || FEED_SORTS.latest;
+    const { page, limit, skip } = parsePagination({
+      page: req.query.page, limit: req.query.limit
     });
-    const rows = await Resource.find(q.filter).sort(q.sort).limit(q.limit).lean();
+    const cohort = leaderboardGroup(c.student.internshipStartDate);
+    const filter = { deletedAt: null, cohort };
+
+    // my_uploads is a special feed: scope to the caller's createdBy.email
+    // rather than the cohort sort. Bypasses FEED_SORTS.
+    if (feed === 'my_uploads') {
+      const [total, rows] = await Promise.all([
+        Resource.countDocuments({ ...filter, 'createdBy.email': c.email }),
+        Resource.find({ ...filter, 'createdBy.email': c.email })
+          .sort({ createdAt: -1 }).skip(skip).limit(limit).lean()
+      ]);
+      const labelled = await labelRows(rows);
+      return res.json({ rows: labelled, total, page, hasMore: skip + rows.length < total });
+    }
+
+    // category / fileType filters (PR #168 parity)
+    if (req.query.category) filter.category = String(req.query.category);
+    if (req.query.fileType) filter.fileType = String(req.query.fileType);
+
+    // Search via $regex — escape user input to prevent regex injection
+    // (PR #168 hardening; we adopt it as a defensive measure even though
+    // our current search uses bounded inputs).
+    if (req.query.search && String(req.query.search).trim()) {
+      const re = escapeRegex(String(req.query.search).trim());
+      filter.$or = [
+        { title:       { $regex: re, $options: 'i' } },
+        { description: { $regex: re, $options: 'i' } },
+        { tags:        { $regex: re, $options: 'i' } }
+      ];
+    }
+
+    const [total, rows] = await Promise.all([
+      Resource.countDocuments(filter),
+      Resource.find(filter).sort(sort).skip(skip).limit(limit).lean()
+    ]);
     const labelled = await labelRows(rows);
-    res.json({ rows: labelled, total: labelled.length });
+    res.json({ rows: labelled, total, page, hasMore: skip + rows.length < total });
   });
 
   api.get('/resources/mine', requireResourceExchangeEnabled, async (req, res) => {
@@ -254,6 +290,61 @@ export default function register(api, ctx) {
       avg: r.ratingCount ? +(r.ratingSum / r.ratingCount).toFixed(2) : 0,
       ratingCount: r.ratingCount
     });
+  });
+
+  // Tier 10 — like / unlike (atomic, idempotent via unique compound
+  // index on ResourceLike). One row per (resourceId, studentId).
+  api.post('/resources/:id/like', requireResourceExchangeEnabled, async (req, res) => {
+    const c = await requireStudent(req, res);
+    if (!c) return;
+    const r = await Resource.findById(req.params.id);
+    if (!r || r.deletedAt) return res.status(404).json({ error: 'resource not found' });
+    let created = false;
+    try {
+      await ResourceLike.create({ resourceId: r._id, studentId: c.student._id });
+      created = true;
+    } catch (err) {
+      if (err?.code !== 11000) throw err;  // duplicate-key = already liked
+    }
+    if (created) {
+      r.likeCount += 1;
+      await r.save();
+    }
+    res.json({ likeCount: r.likeCount, likedByMe: true });
+  });
+
+  api.post('/resources/:id/unlike', requireResourceExchangeEnabled, async (req, res) => {
+    const c = await requireStudent(req, res);
+    if (!c) return;
+    const r = await Resource.findById(req.params.id);
+    if (!r || r.deletedAt) return res.status(404).json({ error: 'resource not found' });
+    const result = await ResourceLike.deleteOne({ resourceId: r._id, studentId: c.student._id });
+    if (result.deletedCount > 0) {
+      r.likeCount = Math.max(0, r.likeCount - 1);
+      await r.save();
+    }
+    res.json({ likeCount: r.likeCount, likedByMe: false });
+  });
+
+  // Tier 10 — download counter. One row per (resourceId, studentId);
+  // subsequent downloads from the same student do NOT increment.
+  api.post('/resources/:id/download', requireResourceExchangeEnabled, async (req, res) => {
+    const c = await requireStudent(req, res);
+    if (!c) return;
+    const r = await Resource.findById(req.params.id);
+    if (!r || r.deletedAt) return res.status(404).json({ error: 'resource not found' });
+    let counted = false;
+    try {
+      await ResourceDownload.create({ resourceId: r._id, studentId: c.student._id });
+      counted = true;
+    } catch (err) {
+      if (err?.code !== 11000) throw err;  // duplicate-key = already counted
+    }
+    if (counted) {
+      r.downloadCount += 1;
+      await r.save();
+    }
+    res.json({ downloadCount: r.downloadCount, countedByMe: counted, url: r.url });
   });
 
   api.post('/resources/:id/report', requireResourceExchangeEnabled, async (req, res) => {

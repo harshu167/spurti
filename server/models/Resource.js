@@ -28,7 +28,22 @@ const resourceSchema = new mongoose.Schema({
   ratingCount: { type: Number, default: 0 },
   ratingSum: { type: Number, default: 0 },
   saveCount: { type: Number, default: 0 },
+  // Tier 10 — like/download counters. Mirrors PR #168's UX. Denormalised
+  // on the resource row so list queries don't unwind the join tables.
+  likeCount: { type: Number, default: 0 },
+  downloadCount: { type: Number, default: 0 },
+  // Tier 10 — structured category + file type. Optional on existing rows
+  // (defaults to '' so pre-tier-10 documents remain valid). Admin can
+  // curate by setting these on a resource via the admin API.
+  category: { type: String, default: '', index: true },
+  fileType: { type: String, default: '', index: true },
   status: { type: String, enum: ['new', 'verified', 'effective'], default: 'new', index: true },
+  // Tier 10 — admin curation toggles. Set by POST /admin/resources/:id/verify|highlight|pin.
+  // Denormalised booleans (not the existing status enum) so each can be
+  // toggled independently and the admin monitor can show all three states.
+  isVerified:    { type: Boolean, default: false, index: true },
+  isHighlighted: { type: Boolean, default: false, index: true },
+  isPinned:       { type: Boolean, default: false, index: true },
   utility: { type: Number, default: 0, index: true },
   effect: { type: Number, default: null }, // v1: always null. v2: SP-delta impact score.
   deletedAt: { type: Date, default: null, index: true },
@@ -48,5 +63,8 @@ const resourceSchema = new mongoose.Schema({
 resourceSchema.index({ cohort: 1, status: 1, utility: -1 });
 resourceSchema.index({ cohort: 1, createdAt: -1 });
 resourceSchema.index({ tags: 1 });
+// Tier 10 — feed sort indexes for trending + downloads + likes
+resourceSchema.index({ cohort: 1, likeCount: -1, createdAt: -1 });
+resourceSchema.index({ cohort: 1, downloadCount: -1, createdAt: -1 });
 
 export default mongoose.model('Resource', resourceSchema);

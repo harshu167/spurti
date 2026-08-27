@@ -499,4 +499,47 @@ export default function registerAdminResourceRoutes(api, ctx) {
     const rows = await ResourceReport.find(filter).sort({ createdAt: -1 }).limit(200).lean();
     res.json({ rows });
   });
+
+  // Tier 10 — admin verify / highlight / pin (PR #168 parity). Each
+  // is a one-shot toggle. Admin-only (adminGuard). Writes audit row
+  // via withAudit. Fail-closed: a thrown audit write rolls back the
+  // toggle so admin never sees a state the audit log can't explain.
+  for (const action of ['verify', 'highlight', 'pin']) {
+    api.post(`/admin/resources/:id/${action}`, adminGuard, async (req, res) => {
+      const r = await Resource.findById(req.params.id);
+      if (!r) return res.status(404).json({ error: 'Not found' });
+      const actor = req.headers['x-admin-email'] || 'admin';
+      const out = await withAudit({
+        rollbackLabel: `admin-${action}`,
+        mutate: async () => {
+          if (action === 'verify')   r.isVerified   = !r.isVerified;
+          if (action === 'highlight') r.isHighlighted = !r.isHighlighted;
+          if (action === 'pin')      r.isPinned     = !r.isPinned;
+          await r.save();
+          return { doc: r.toObject() };
+        },
+        audit: async ({ doc }) => {
+          await appendAudit({
+            resourceId: r._id,
+            actorType: 'admin',
+            actorEmail: actor,
+            kind: `${action === 'pin' ? 'resource.pinned' : action === 'verify' ? 'resource.verified' : 'resource.highlighted'}`,
+            payload: {
+              resourceId: String(r._id),
+              [action]: action === 'pin' ? doc.isPinned : action === 'verify' ? doc.isVerified : doc.isHighlighted
+            }
+          });
+        }
+      });
+      if (!out.ok) {
+        return res.status(500).json({ error: out.stage === 'audit' ? 'audit write failed' : 'mutation failed' });
+      }
+      res.json({
+        ok: true,
+        isVerified: r.isVerified,
+        isHighlighted: r.isHighlighted,
+        isPinned: r.isPinned
+      });
+    });
+  }
 }

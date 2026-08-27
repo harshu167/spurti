@@ -3246,6 +3246,17 @@ function ResourceCard({ r, onOpen, email, onChanged }) {
     try { await fetch(`${API}/resources/${r._id}/save?email=${encodeURIComponent(email)}`, { method: 'POST' }); onChanged(); }
     finally { setBusy(false); }
   };
+  // Tier 10 — like toggle. Optimistic local state for snappy UI; onChanged()
+  // refetches the row so the server's likeCount is the source of truth.
+  const toggleLike = async (e) => {
+    e.stopPropagation();
+    const wasLiked = r.likedByMe;
+    setBusy(true);
+    try {
+      await fetch(`${API}/resources/${r._id}/${wasLiked ? 'unlike' : 'like'}?email=${encodeURIComponent(email)}`, { method: 'POST' });
+      onChanged();
+    } finally { setBusy(false); }
+  };
   const avg = r.ratingCount ? (r.ratingSum / r.ratingCount) : null;
   const context = r.contextLabel || '';
   const typeText = R_TYPE_ICON[r.type] || r.type;
@@ -3266,8 +3277,15 @@ function ResourceCard({ r, onOpen, email, onChanged }) {
             ? <span title={`${r.ratingCount} ratings`}>{avg.toFixed(1)} avg <em>({r.ratingCount})</em></span>
             : <span className="muted">no ratings yet</span>}
           <span className="rx-saved">saved by {r.saveCount ?? 0}</span>
+          {/* Tier 10 — like/download counters */}
+          <span className="muted rx-likes" title="Likes">♥ {r.likeCount ?? 0}</span>
+          <span className="muted rx-downloads" title="Downloads">↓ {r.downloadCount ?? 0}</span>
         </span>
         <span className="rx-actions" onClick={e => e.stopPropagation()}>
+          {/* Tier 10 — like button next to save */}
+          <button className="secondary" disabled={busy} onClick={toggleLike} aria-label={r.likedByMe ? 'Unlike' : 'Like'}>
+            {r.likedByMe ? '♥ Liked' : '♡ Like'}
+          </button>
           <button className="secondary" disabled={busy} onClick={toggleSave} aria-label="Save this resource">
             {busy ? 'Saving…' : 'Save'}
           </button>
@@ -3310,6 +3328,23 @@ function ResourceSheet({ resource: r, email, onClose, onChanged }) {
       else { setMsg('Reported. The team will review it.'); onChanged(); }
     } finally { setBusy(false); }
   };
+  // Tier 10 — download counter. Opens the URL in a new tab + counts once
+  // per (resource, student). The server returns the URL explicitly so the
+  // SPA doesn't have to trust its own copy of the row.
+  const download = async () => {
+    setBusy(true);
+    try {
+      const res = await fetch(`${API}/resources/${r._id}/download?email=${encodeURIComponent(email)}`, { method: 'POST' });
+      const j = await res.json().catch(() => ({}));
+      if (res.ok && j.url) {
+        if (j.countedByMe) setMsg('Download tracked. Opening link…');
+        if (typeof window !== 'undefined') window.open(j.url, '_blank', 'noopener');
+        onChanged();
+      } else {
+        setMsg(j.error || 'Could not track download.');
+      }
+    } finally { setBusy(false); }
+  };
   return (
     <div className="overlay" onClick={e => e.target === e.currentTarget && onClose()}>
       <section className="modal rx-sheet">
@@ -3336,6 +3371,12 @@ function ResourceSheet({ resource: r, email, onClose, onChanged }) {
           </div>
         </div>
         <div className="rx-sheet-foot">
+          {/* Tier 10 — download button. Calls the download endpoint which
+              counts the download and returns the URL. Avoids hard-coding
+              the URL in the client (server is authoritative). */}
+          <button className="secondary" onClick={download} disabled={busy} aria-label="Download this resource">
+            {busy ? 'Tracking…' : 'Download'}
+          </button>
           <button className="secondary" onClick={report} disabled={busy} aria-label="Report this resource">Report</button>
           <span className="muted">by {r.createdBy?.name || 'a student'}</span>
         </div>
