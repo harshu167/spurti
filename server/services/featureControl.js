@@ -1,17 +1,24 @@
 /**
- * Feature Control service — tier 8.
+ * Feature Control service — tier 8 + tier 9.
  *
- * Server-side toggle for the Resource Exchange feature. Pure helpers live
- * here (read, write); the route layer orchestrates audit + response.
+ * Server-side toggle for the SPURTHI **experimental features** (currently
+ * Resource Exchange + Recovery Missions). One global boolean. When admin
+ * sets enabled=false, every student-facing experimental route returns
+ * 403 with {error: 'feature_disabled'}; the SPA hides the affected UI
+ * cleanly; the admin can re-enable from the same Control Center card.
  *
- * The toggle is global — there is one config record. When admin sets
- * enabled=false, every student-facing route (POST/GET/PATCH on
- * /api/resources, /api/resources/:id, /api/resources/:id/*,
- * /api/resources/mine, /api/resources/mine/impact,
- * /api/resources/context/:type/:ref) returns 403 with {error: 'feature_disabled'}.
+ * Why one toggle covers both features: they share the same product
+ * framing (experimental, admin-governed, designed to be turned off
+ * during moderation maintenance) and the same admin UX. Per-feature
+ * toggles would multiply the surface area without adding control.
  *
  * Admin routes bypass this guard entirely (otherwise the admin could
  * disable and then lose the ability to re-enable).
+ *
+ * ponytail: function names kept stable across tier 8→9. New aliases
+ * (`isExperimentalFeaturesEnabled`, `requireExperimentalFeaturesEnabled`)
+ * exist for documentation; the underlying behaviour is the same single
+ * boolean.
  */
 import ResourceExchangeConfig from '../models/ResourceExchangeConfig.js';
 
@@ -70,6 +77,14 @@ export async function requireResourceExchangeEnabled(req, res, next) {
     next(e);
   }
 }
+
+// ponytail: the names `isResourceExchangeEnabled` and
+// `requireResourceExchangeEnabled` are kept for backwards compatibility
+// with the tier-8 admin/resources routes that already call them.
+// Tier-9 adds aliases with the new semantic name so mission routes can
+// be wired to a guard whose intent is self-documenting.
+export const isExperimentalFeaturesEnabled = isResourceExchangeEnabled;
+export const requireExperimentalFeaturesEnabled = requireResourceExchangeEnabled;
 
 // Admin write path: persist the new state + invalidate the cache. Caller
 // is responsible for the audit row (kept separate so this service doesn't

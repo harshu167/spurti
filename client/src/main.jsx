@@ -2282,7 +2282,9 @@ function ResourceExchangeToggle({ headers }) {
     <div className="rcc-feature">
       <div className="rcc-feature-head">
         <div className="rcc-feature-title">
-          <strong>Resource Exchange</strong>
+          {/* Tier 9: this toggle now gates both Resource Exchange AND
+              Recovery Missions. The label reflects that broader scope. */}
+          <strong>Experimental features</strong>
           <span className="rcc-feature-state">{enabled ? 'Enabled' : 'Disabled'}</span>
         </div>
         <button
@@ -2293,8 +2295,8 @@ function ResourceExchangeToggle({ headers }) {
       </div>
       <p className="muted rcc-feature-desc">
         {enabled
-          ? 'Students can discover, share, save, rate and report resources.'
-          : 'Students cannot access Resource Exchange. Admin Control Center remains fully available.'}
+          ? 'Resource Exchange + Recovery Missions are both available to students.'
+          : 'Resource Exchange + Recovery Missions are both paused for students. Admin Control Center remains fully available.'}
       </p>
       {msg && <p className="muted rcc-flash">{msg}</p>}
       {err && <p className="error rcc-flash">{err}</p>}
@@ -2305,12 +2307,14 @@ function ResourceExchangeToggle({ headers }) {
         <div className="overlay">
           <section className="modal rcc-confirm">
             <div className="modal-head">
-              <h2>{confirm.nextEnabled ? 'Enable Resource Exchange?' : 'Disable Resource Exchange?'}</h2>
+              <h2>{confirm.nextEnabled
+                ? 'Enable experimental features?'
+                : 'Disable experimental features?'}</h2>
               <button className="icon" aria-label="Close confirm" onClick={() => setConfirm(null)}>x</button>
             </div>
             <p>{confirm.nextEnabled
-              ? 'Students will regain access to Resource Exchange.'
-              : 'Students will temporarily lose access to Resource Exchange and resource sharing. Existing resources will not be deleted.'}</p>
+              ? 'Resource Exchange + Recovery Missions will be available to students again.'
+              : 'Resource Exchange + Recovery Missions will be paused for students. Existing data (resources, assignments, audit history) will not be deleted.'}</p>
             <label className="rcc-confirm-reason">
               Reason (optional, encouraged)
               <input

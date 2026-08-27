@@ -28,6 +28,9 @@ import {
   weekStartUtc,
   validateCompletionAttempt, checkCompletion
 } from '../services/missions.js';
+import {
+  requireExperimentalFeaturesEnabled
+} from '../services/featureControl.js';
 
 // Default applySpDelta import — overridden by ctx for tests.
 import { applySpDelta as defaultApplySpDelta } from '../services/vibe.js';
@@ -37,13 +40,16 @@ export default function registerMissionRoutes(api, ctx) {
   const applySpDelta = ctx.applySpDelta || defaultApplySpDelta;
 
   // GET /api/missions/me — current week's assignment + mission template.
-  // Returns:
-  //   { enabled: true,  assignment: null }    → no mission this week
-  //   { enabled: false }                      → feature off (hidden by SPA)
-  api.get('/missions/me', async (req, res) => {
-    const auth = await requireStudent(req, res);
-    if (!auth) return;
-    const studentEmail = auth.email;
+  //   Returns:
+   //   { enabled: true,  assignment: null }    → no mission this week
+   //   { enabled: false }                      → feature off (hidden by SPA)
+   // Tier 9: same experimental-features toggle as Resource Exchange.
+   // When disabled, the route returns 403 with the canonical error code
+   // so the SPA can hide the widget cleanly.
+   api.get('/missions/me', requireExperimentalFeaturesEnabled, async (req, res) => {
+     const auth = await requireStudent(req, res);
+     if (!auth) return;
+     const studentEmail = auth.email;
     const ws = weekStartUtc();
     const a = await RecoveryAssignment.findOne({
       studentEmail,
@@ -85,7 +91,7 @@ export default function registerMissionRoutes(api, ctx) {
   //   - write mission.completed + mission.rewarded audit rows
   //   - if any step fails, roll back status to in_progress so the
   //     student can retry (no phantom completion)
-  api.patch('/missions/me', async (req, res) => {
+  api.patch('/missions/me', requireExperimentalFeaturesEnabled, async (req, res) => {
     const auth = await requireStudent(req, res);
     if (!auth) return;
     const studentEmail = auth.email;

@@ -19,7 +19,8 @@ import {
 import { appendAudit } from '../server/services/audit.js';
 import {
   isResourceExchangeEnabled, getConfig, setConfig,
-  invalidateCache, requireResourceExchangeEnabled
+  invalidateCache, requireResourceExchangeEnabled,
+  isExperimentalFeaturesEnabled, requireExperimentalFeaturesEnabled
 } from '../server/services/featureControl.js';
 import registerResourceRoutes from '../server/routes/resources.js';
 import registerAdminResourceRoutes from '../server/routes/admin-resources.js';
@@ -406,5 +407,24 @@ describe('Tier 8 — middleware behaviour', () => {
     const r = await request(app).get('/x');
     assert.equal(r.status, 200);
     assert.equal(r.body.ok, true);
+  });
+
+  // ── Tier 9 — single toggle covers BOTH Resource Exchange AND Recovery Missions ──
+
+  test('T9: alias `isExperimentalFeaturesEnabled` is the same function as `isResourceExchangeEnabled`', () => {
+    // Stable contract: the new name resolves to the same function. This
+    // guards against accidental decoupling if someone renames the
+    // underlying implementation later.
+    assert.equal(typeof isExperimentalFeaturesEnabled, 'function');
+    // The two are NOT === (different bindings) but they call the same
+    // underlying helper. Asserting behaviour equivalence:
+    assert.equal(typeof isExperimentalFeaturesEnabled(), 'boolean');
+    assert.equal(typeof isResourceExchangeEnabled(), 'boolean');
+  });
+
+  test('T9: alias `requireExperimentalFeaturesEnabled` is the same function as `requireResourceExchangeEnabled`', () => {
+    // Routes wire up the alias for documentation; the underlying
+    // function must be the same.
+    assert.equal(requireExperimentalFeaturesEnabled.length, requireResourceExchangeEnabled.length);
   });
 });

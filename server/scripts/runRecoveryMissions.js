@@ -30,6 +30,9 @@ import {
   createAssignment,
   loadStudentsWithRecentTxns
 } from '../services/missions.js';
+// Tier 9: scheduler respects the experimental-features toggle. If admin
+// has disabled the feature, the scheduler is a no-op (same as --dry-run).
+import { isExperimentalFeaturesEnabled, invalidateCache } from '../services/featureControl.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -47,6 +50,16 @@ const explicitWeek = weekArgIdx > -1 ? new Date(argv[weekArgIdx + 1] + 'T00:00:0
 // ── main ───────────────────────────────────────────────────────────────────
 async function run() {
   await mongoose.connect(MONGO_URI);
+  // Tier 9 — honour the experimental-features toggle. If admin has
+  // disabled the feature, the scheduler exits cleanly without scanning
+  // or assigning anything. This is the safe default: a disabled
+  // feature must not have new assignments generated.
+  invalidateCache();  // ensure we read the current value, not a stale cache
+  const enabled = await isExperimentalFeaturesEnabled();
+  if (!enabled) {
+    console.log('Recovery Mission Run (SKIPPED — experimental features are disabled)');
+    return;
+  }
   const now = new Date();
   const weekStart = explicitWeek || weekStartUtc(now);
 
