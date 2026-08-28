@@ -995,6 +995,7 @@ tr.step-alert td { border-color: #f3c9c5; }
 /* Monochrome per design directive — no coloured state pills, no status dots.
    Supportive copy is the only signal. */
 .bank-stack > .rmw + .panel { margin-top: 16px; }
+.rmw { display: block; padding: 16px 20px; border: 1px solid var(--line); border-radius: 8px; background: #fff; margin-bottom: 16px; }
 .rmw .panel-head h2 { font-size: 16px; font-weight: 600; }
 .rmw-eyebrow { font-size: 13px; color: var(--muted); letter-spacing: 0.02em; text-transform: uppercase; }
 .rmw-body { padding: 12px 16px 4px; }
