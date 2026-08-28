@@ -3057,7 +3057,7 @@ function ResourcesForContext({ student, contextType, contextRef, label, openShar
   const [total, setTotal] = useState(0);
   const load = async () => {
     try {
-      const r = await fetch(`${API}/resources/context/${contextType}/${encodeURIComponent(contextRef)}?email=${encodeURIComponent(email)}`);
+      const r = await fetch(`${API}/resources/context/${contextType}/${encodeURIComponent(contextRef)}`, { credentials: 'include' });
       if (!r.ok) { setErr('Failed to load resources'); return; }
       const j = await r.json();
       setRows(j.rows || []);
@@ -3118,10 +3118,10 @@ function ResourcesPanel({ student, pendingOpenId, onConsumedPending, onResourceE
   const load = async () => {
     setError(null);
     const url = sub === 'mine'
-      ? `${API}/resources/mine?email=${encodeURIComponent(email)}`
-      : `${API}/resources?sort=${sort}&email=${encodeURIComponent(email)}${q ? `&q=${encodeURIComponent(q)}` : ''}`;
+      ? `${API}/resources/mine?sort=${sort}${q ? `&q=${encodeURIComponent(q)}` : ''}`
+      : `${API}/resources?sort=${sort}${q ? `&q=${encodeURIComponent(q)}` : ''}`;
     try {
-      const r = await fetch(url);
+      const r = await fetch(url, { credentials: 'include' });
       const j = await r.json();
       // Tier 8B — 403 feature_disabled is the runtime source-of-truth
       // for stale-page handling. Flip our local state and notify the
@@ -3243,7 +3243,7 @@ function ResourceCard({ r, onOpen, email, onChanged }) {
   const toggleSave = async (e) => {
     e.stopPropagation();
     setBusy(true);
-    try { await fetch(`${API}/resources/${r._id}/save?email=${encodeURIComponent(email)}`, { method: 'POST' }); onChanged(); }
+    try { await fetch(`${API}/resources/${r._id}/save`, { method: 'POST', credentials: 'include' }); onChanged(); }
     finally { setBusy(false); }
   };
   // Tier 10 — like toggle. Optimistic local state for snappy UI; onChanged()
@@ -3253,7 +3253,7 @@ function ResourceCard({ r, onOpen, email, onChanged }) {
     const wasLiked = r.likedByMe;
     setBusy(true);
     try {
-      await fetch(`${API}/resources/${r._id}/${wasLiked ? 'unlike' : 'like'}?email=${encodeURIComponent(email)}`, { method: 'POST' });
+      await fetch(`${API}/resources/${r._id}/${wasLiked ? 'unlike' : 'like'}`, { method: 'POST', credentials: 'include' });
       onChanged();
     } finally { setBusy(false); }
   };
@@ -3306,8 +3306,8 @@ function ResourceSheet({ resource: r, email, onClose, onChanged }) {
   const rate = async (n) => {
     setBusy(true);
     try {
-      const res = await fetch(`${API}/resources/${r._id}/rate?email=${encodeURIComponent(email)}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+      const res = await fetch(`${API}/resources/${r._id}/rate`, {
+        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ stars: n })
       });
       if (res.ok) { setStars(n); setMsg(`Rated ${n} of 5. Thanks for the signal.`); onChanged(); }
@@ -3318,8 +3318,8 @@ function ResourceSheet({ resource: r, email, onClose, onChanged }) {
     setBusy(true);
     try {
       const reason = window.prompt('Why are you reporting this resource?') || '';
-      const res = await fetch(`${API}/resources/${r._id}/report?email=${encodeURIComponent(email)}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+      const res = await fetch(`${API}/resources/${r._id}/report`, {
+        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ reason })
       });
       const j = await res.json().catch(() => ({}));
@@ -3334,7 +3334,7 @@ function ResourceSheet({ resource: r, email, onClose, onChanged }) {
   const download = async () => {
     setBusy(true);
     try {
-      const res = await fetch(`${API}/resources/${r._id}/download?email=${encodeURIComponent(email)}`, { method: 'POST' });
+      const res = await fetch(`${API}/resources/${r._id}/download`, { method: 'POST', credentials: 'include' });
       const j = await res.json().catch(() => ({}));
       if (res.ok && j.url) {
         if (j.countedByMe) setMsg('Download tracked. Opening link…');
@@ -3405,8 +3405,9 @@ function CreateResourceSheet({ email, onClose, onCreated, initialContext }) {
     setBusy(true); setErr(null);
     const tagList = tags.split(/[\s,]+/).map(t => t.trim()).filter(Boolean);
     try {
-      const res = await fetch(`${API}/resources?email=${encodeURIComponent(email)}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+      const res = await fetch(`${API}/resources`, {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ type, url: type === 'link' || type === 'video' ? url : '', title, description, contextType, contextRef, tags: tagList })
       });
       const j = await res.json();
