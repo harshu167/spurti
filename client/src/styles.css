@@ -896,6 +896,55 @@ tr.step-alert td { border-color: #f3c9c5; }
 .rx-sheet-foot, .rx-sheet-foot { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 12px; }
 .rx-sheet-foot .rx-by { font-size: 13px; }
 
+/* ---- Tier 11 — Resource Exchange richness (monochrome) ------------------ */
+/* Cohort pulse strip — three text tiles, no colour, no coloured dots. The
+   user-facing directive is monochrome: state is signalled by text + outlined
+   buttons, never by coloured pills. */
+.rx-pulse { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.rx-pulse-tile { background: #fff; border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; text-align: center; }
+.rx-pulse-tile strong { display: block; font-size: 22px; font-weight: 600; color: var(--ink); }
+.rx-pulse-tile span { display: block; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; margin-top: 4px; }
+
+/* Popular-tags strip — quick-fill chips for the search box. Tap to filter
+   the discover feed. Active state is the same outlined treatment the
+   rest of the panel uses; no colours. */
+.rx-tags { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 10px 14px; margin: 0 0 12px; background: #fff; border: 1px solid var(--line); border-radius: 10px; }
+.rx-tags-label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; margin-right: 4px; }
+.rx-tag { background: #f8fafc; border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; font-size: 12px; cursor: pointer; font-family: inherit; display: inline-flex; align-items: center; gap: 6px; }
+.rx-tag em { font-style: normal; color: var(--muted); font-size: 11px; }
+.rx-tag.active { background: var(--ink); color: #fff; border-color: var(--ink); }
+.rx-tag.active em { color: rgba(255,255,255,.7); }
+.rx-tag:hover:not(.active) { background: #fff; border-color: var(--ink); }
+
+/* Refresh button — a ghost chip in the subtab row. */
+.rx-subtab.ghost { background: #fff; border-style: dashed; }
+.rx-subtab.ghost:hover:not([disabled]) { background: #f8fafc; }
+.rx-subtab.ghost[disabled] { opacity: 0.6; cursor: default; }
+.rx-refresh { margin-left: auto; }
+
+/* Session-expired card — replaces the raw "Not authenticated" red banner
+   with a calm, branded recovery state + Reload button. */
+.rx-session { padding: 36px 24px; text-align: center; }
+.rx-session-title { margin: 0 0 6px; font-size: 16px; font-weight: 600; }
+.rx-session .muted { margin: 0 0 14px; font-size: 14px; }
+.rx-session-btn { padding: 8px 22px; }
+
+/* Empty-state CTA — replaced the bare "No resources yet" line with a
+   primary CTA that opens the share form. Discover-only. */
+.rx-empty-cta { padding: 36px 24px; text-align: center; }
+.rx-empty-title { margin: 0 0 6px; font-size: 16px; font-weight: 600; }
+.rx-empty-cta .muted { margin: 0 0 14px; font-size: 14px; }
+.rx-empty-btn { padding: 8px 22px; }
+
+/* Skeleton placeholder — three placeholder cards with the same dimensions
+   as a real resource card. Subtle pulse animation, monochrome. */
+.rx-skeleton { display: grid; gap: 12px; padding: 14px 16px; }
+.rx-skel { height: 132px; border: 1px dashed var(--line); background:
+  repeating-linear-gradient(90deg, #f8fafc 0, #f8fafc 24px, #ffffff 24px, #ffffff 48px);
+  animation: rx-skel-pulse 1.4s linear infinite; cursor: default; }
+.rx-skel:hover { transform: none; box-shadow: none; }
+@keyframes rx-skel-pulse { 0% { background-position: 0 0; } 100% { background-position: 48px 0; } }
+
 /* Tier 4 — resources attached to a learning context (phase cards, etc.) */
 .rx-ctx { margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--line); }
 .rx-ctx-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; gap: 12px; }

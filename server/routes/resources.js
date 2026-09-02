@@ -160,6 +160,90 @@ export default function register(api, ctx) {
     res.json({ rows: labelled, ...impact });
   });
 
+  // Tier 11 — student "saved by me" feed. Joins ResourceSave to Resource so
+  // we can return the same labelled row shape as /resources, plus the
+  // original saved timestamp (so newest-first is meaningful). Cohort-scoped
+  // like /resources — a save to an out-of-cohort resource is filtered out
+  // at the resource match (the save row exists, but the joined Resource
+  // doesn't pass the cohort filter).
+  api.get('/resources/saved', requireResourceExchangeEnabled, async (req, res) => {
+    const c = await requireStudent(req, res);
+    if (!c) return;
+    const cohort = leaderboardGroup(c.student.internshipStartDate);
+    const saves = await ResourceSave.find({ email: c.email })
+      .sort({ createdAt: -1 })
+      .limit(100)
+      .lean();
+    if (saves.length === 0) {
+      return res.json({ rows: [], total: 0, page: 1, hasMore: false });
+    }
+    const ids = saves.map(s => s.resourceId);
+    const rows = await Resource.find({
+      _id: { $in: ids },
+      deletedAt: null,
+      cohort
+    }).lean();
+    // Preserve the save-order; labelRows gives us the human context.
+    const byId = new Map(rows.map(r => [String(r._id), r]));
+    const ordered = saves
+      .map(s => byId.get(String(s.resourceId)))
+      .filter(Boolean);
+    const labelled = await labelRows(ordered);
+    res.json({
+      rows: labelled,
+      total: labelled.length,
+      page: 1,
+      hasMore: false
+    });
+  });
+
+  // Tier 11 — cohort-wide stats for the Discover pulse strip. Cheap
+  // aggregations on the cohort filter; no per-row work. Bounded: even a
+  // 1000-resource cohort returns well under a 100KB response.
+  api.get('/resources/stats', requireResourceExchangeEnabled, async (req, res) => {
+    const c = await requireStudent(req, res);
+    if (!c) return;
+    const cohort = leaderboardGroup(c.student.internshipStartDate);
+    const baseFilter = { deletedAt: null, cohort };
+    const [totalResources, saveAgg, ratingAgg, byContextAgg, tagAgg] = await Promise.all([
+      Resource.countDocuments(baseFilter),
+      ResourceSave.aggregate([
+        // Join saves to their resource so we can cohort-scope without
+        // trusting client-side filtering.
+        { $lookup: { from: 'resources', localField: 'resourceId', foreignField: '_id', as: 'r' } },
+        { $unwind: '$r' },
+        { $match: { 'r.deletedAt': null, 'r.cohort': cohort } },
+        { $count: 'n' }
+      ]),
+      ResourceRating.aggregate([
+        { $lookup: { from: 'resources', localField: 'resourceId', foreignField: '_id', as: 'r' } },
+        { $unwind: '$r' },
+        { $match: { 'r.deletedAt': null, 'r.cohort': cohort } },
+        { $group: { _id: '$email' } },
+        { $count: 'n' }
+      ]),
+      Resource.aggregate([
+        { $match: baseFilter },
+        { $group: { _id: '$contextType', n: { $sum: 1 } } },
+        { $sort: { n: -1 } }
+      ]),
+      Resource.aggregate([
+        { $match: { ...baseFilter, tags: { $exists: true, $ne: [] } } },
+        { $unwind: '$tags' },
+        { $group: { _id: '$tags', n: { $sum: 1 } } },
+        { $sort: { n: -1 } },
+        { $limit: 8 }
+      ])
+    ]);
+    const totalSaves = saveAgg[0]?.n || 0;
+    const totalRaters = ratingAgg[0]?.n || 0;
+    const byContextType = Object.fromEntries(
+      byContextAgg.map(row => [row._id, row.n])
+    );
+    const topTags = tagAgg.map(row => ({ tag: row._id, count: row.n }));
+    res.json({ totalResources, totalSaves, totalRaters, byContextType, topTags });
+  });
+
   // Tier 4 — fetch resources attached to a specific context. Used by the
   // existing learning surfaces (phase cards in MyJourney today; poll cards
   // when poll UI lands). Returns labelled rows plus a small `total` so the

@@ -429,6 +429,104 @@ describe('Resource Exchange route integration (real MongoDB)', () => {
     assert.equal(r.status, 401);
   });
 
+  // ── TIER 11 — saved-by-me + cohort-pulse endpoints ──────────────────────
+  // Both go through the same auth + feature gate as the rest of the file.
+  // We piggy-back on existing helpers (asStudent, validBody) to cover
+  // auth boundaries + cohort scoping in one shot each.
+
+  test('saved: unauthenticated request is rejected', async () => {
+    const r = await request(app).get('/api/resources/saved');
+    assert.equal(r.status, 401);
+  });
+
+  test('saved: student sees only their own saves', async () => {
+    const a = await asStudent('alice@iitrpr.ac.in');
+    const b = await asStudent('bob@iitrpr.ac.in');
+    const create = await request(app).post('/api/resources')
+      .set('Cookie', cookie(a.token)).send(validBody({ title: 'shared-note' }));
+    const id = create.body.id;
+    // alice and bob both save; alice must see her save only.
+    await request(app).post(`/api/resources/${id}/save`).set('Cookie', cookie(a.token));
+    await request(app).post(`/api/resources/${id}/save`).set('Cookie', cookie(b.token));
+    const aliceSeen = await request(app).get('/api/resources/saved').set('Cookie', cookie(a.token));
+    assert.equal(aliceSeen.status, 200);
+    assert.equal(aliceSeen.body.total, 1);
+    assert.equal(aliceSeen.body.rows[0].title, 'shared-note');
+    const bobSeen = await request(app).get('/api/resources/saved').set('Cookie', cookie(b.token));
+    assert.equal(bobSeen.body.total, 1);
+  });
+
+  test('saved: empty returns a clean empty envelope (no 500)', async () => {
+    const { token } = await asStudent('alice@iitrpr.ac.in');
+    const r = await request(app).get('/api/resources/saved').set('Cookie', cookie(token));
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body, { rows: [], total: 0, page: 1, hasMore: false });
+  });
+
+  test('stats: unauthenticated request is rejected', async () => {
+    const r = await request(app).get('/api/resources/stats');
+    assert.equal(r.status, 401);
+  });
+
+  test('stats: counts resources + byContextType + topTags + raters', async () => {
+    const a = await asStudent('alice@iitrpr.ac.in');
+    // alice creates 3 resources with distinct (type, tag, context) to exercise
+    // every count path. bob saves one of them so totalSaves=1.
+    const tags = ['neural-nets', 'gradient', 'neural-nets'];
+    for (const [i, tag] of tags.entries()) {
+      const create = await request(app).post('/api/resources')
+        .set('Cookie', cookie(a.token))
+        .send(validBody({
+          title: `r-${i}`,
+          contextType: i === 2 ? 'phase' : 'topic',
+          contextRef: i === 2 ? 'standup' : tag,
+          tags: [tag]
+        }));
+      if (i === 0) {
+        // bob saves + rates resource 0
+        const b = await asStudent('bob@iitrpr.ac.in');
+        await request(app).post(`/api/resources/${create.body.id}/save`).set('Cookie', cookie(b.token));
+        await request(app).post(`/api/resources/${create.body.id}/rate`)
+          .set('Cookie', cookie(b.token)).send({ stars: 5 });
+      }
+    }
+    const r = await request(app).get('/api/resources/stats').set('Cookie', cookie(a.token));
+    assert.equal(r.status, 200);
+    assert.equal(r.body.totalResources, 3, '3 resources in cohort');
+    assert.equal(r.body.totalSaves, 1, '1 save from bob');
+    assert.equal(r.body.totalRaters, 1, 'bob is the 1 rater');
+    assert.equal(r.body.byContextType.topic, 2);
+    assert.equal(r.body.byContextType.phase, 1);
+    // 'neural-nets' has 2 uses, 'gradient' has 1 — desc order
+    const tagsOut = r.body.topTags.map(t => t.tag);
+    assert.equal(tagsOut[0], 'neural-nets');
+    assert.equal(r.body.topTags.find(t => t.tag === 'neural-nets').count, 2);
+    assert.ok(r.body.topTags.length <= 8);
+  });
+
+  test('stats: cohort scoping — other-cohort resources + saves are NOT counted', async () => {
+    // alice (cohort A) creates + saves 2 resources
+    const a = await asStudent('alice@iitrpr.ac.in');
+    await request(app).post('/api/resources').set('Cookie', cookie(a.token))
+      .send(validBody({ title: 'a1' }));
+    await request(app).post('/api/resources').set('Cookie', cookie(a.token))
+      .send(validBody({ title: 'a2' }));
+    // bob (cohort B) gets stats — should see 0
+    const bobDate = new Date('2026-07-10T03:30:00Z');
+    const bob = await Student.create({
+      name: 'bob', email: 'bob@iitrpr.ac.in',
+      internshipStartDate: bobDate, status: 'active', totalSp: 100
+    });
+    const bobToken = `tok_${bob._id}`;
+    cookieMap[bobToken] = bob.email;
+    const bobStats = await request(app).get('/api/resources/stats').set('Cookie', cookie(bobToken));
+    assert.equal(bobStats.body.totalResources, 0, 'bob (different cohort) sees no resources');
+    assert.equal(bobStats.body.totalSaves, 0);
+    // alice still sees her own
+    const aliceStats = await request(app).get('/api/resources/stats').set('Cookie', cookie(a.token));
+    assert.equal(aliceStats.body.totalResources, 2);
+  });
+
   // ── ADMIN RESTORE preserves status recomputation ─────────────────────
   test('restore: status upgrades from "new" → "verified" after counts are bumped (DB-verified)', async () => {
     const { token } = await asStudent('alice@iitrpr.ac.in');

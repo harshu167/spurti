@@ -3107,21 +3107,40 @@ function ResourcesPanel({ student, pendingOpenId, onConsumedPending, onResourceE
   const email = student.email;
   const [sub, setSub] = useState('discover');
   const [rows, setRows] = useState(null);
-  const [sort, setSort] = useState('recent');
+  const [sort, setSort] = useState('latest');
   const [q, setQ] = useState('');
   const [error, setError] = useState(null);
   const [featureDisabled, setFeatureDisabled] = useState(false);
+  const [sessionExpired, setSessionExpired] = useState(false);
   const [openRes, setOpenRes] = useState(null);
   const [showCreate, setShowCreate] = useState(false);
   const [mine, setMine] = useState(null);
+  const [stats, setStats] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
 
-  const load = async () => {
+  // Tier 11 — cohort pulse + my-saved are loaded alongside the row fetch so
+  // the first paint of the Discover tab already has numbers. Saves a round
+  // trip on every sub-tab switch. Errors here are non-fatal (just leaves
+  // stats as null → no pulse strip rendered); the row fetch is the source
+  // of truth for the actual content.
+  const fetchRows = async () => {
     setError(null);
+    setSessionExpired(false);
     const url = sub === 'mine'
-      ? `${API}/resources/mine?sort=${sort}${q ? `&q=${encodeURIComponent(q)}` : ''}`
-      : `${API}/resources?sort=${sort}${q ? `&q=${encodeURIComponent(q)}` : ''}`;
+      ? `${API}/resources/mine`
+      : sub === 'saved'
+        ? `${API}/resources/saved`
+        : `${API}/resources?feed=${sort}`;
     try {
       const r = await fetch(url, { credentials: 'include' });
+      if (r.status === 401) {
+        // Tier 11 — show a friendly recovery state instead of the raw
+        // server error string. The user is clearly logged in (StudentView
+        // just loaded), so a 401 here means the chatengine_token cookie
+        // is gone — a reload re-runs the Samagama handshake.
+        setSessionExpired(true);
+        return;
+      }
       const j = await r.json();
       // Tier 8B — 403 feature_disabled is the runtime source-of-truth
       // for stale-page handling. Flip our local state and notify the
@@ -3136,7 +3155,30 @@ function ResourcesPanel({ student, pendingOpenId, onConsumedPending, onResourceE
       else setRows(j.rows || []);
     } catch (e) { setError(e?.message || 'Network error'); }
   };
-  useEffect(() => { load(); }, [sub, sort, q, email]);
+
+  const fetchStats = async () => {
+    try {
+      const r = await fetch(`${API}/resources/stats`, { credentials: 'include' });
+      if (!r.ok) return;
+      const j = await r.json();
+      setStats(j);
+    } catch { /* non-fatal */ }
+  };
+
+  const refresh = async () => {
+    setRefreshing(true);
+    try {
+      await Promise.all([fetchRows(), sub === 'discover' && fetchStats()]);
+    } finally {
+      setRefreshing(false);
+    }
+  };
+  useEffect(() => { refresh(); }, [sub, sort, q, email]);
+  // Tier 11 — load stats once when the panel mounts; the cohort pulse
+  // changes slowly (new resources are spread over weeks), so we don't
+  // re-fetch on every tab/sub-tab switch.
+  useEffect(() => { fetchStats(); }, [email]);
+
   // Tier 4 — when StudentView hands us a pendingOpenId (a phase card
   // click requested this exact resource), wait for the list to load, then
   // open the detail sheet. Falls back to "not found" silently if the id
@@ -3164,6 +3206,33 @@ function ResourcesPanel({ student, pendingOpenId, onConsumedPending, onResourceE
     );
   }
 
+  // Tier 11 — session recovery state. Replaces the entire list surface
+  // with a single short card + reload button. Never shows the raw
+  // "Not authenticated" text from the server.
+  if (sessionExpired) {
+    return (
+      <div className="rx">
+        <section className="panel rx-head">
+          <h2>Resource Exchange</h2>
+          <p className="muted">
+            Resources contribute useful material at the point in the cohort where it is relevant — tagged to a topic, phase, or poll so it is obvious why each is here.
+          </p>
+        </section>
+        <section className="panel empty rx-session">
+          <p className="rx-session-title">Your session expired.</p>
+          <p className="muted">Reload the page to re-establish the connection.</p>
+          <button className="primary rx-session-btn" onClick={() => window.location.reload()}>
+            Reload
+          </button>
+        </section>
+      </div>
+    );
+  }
+
+  // Tier 11 — Discover surface with the cohort pulse strip. Stats are
+  // null on first paint, so this short-circuits cleanly.
+  const pulse = sub === 'discover' && stats;
+
   return (
     <div className="rx">
       <section className="panel rx-head">
@@ -3173,14 +3242,23 @@ function ResourcesPanel({ student, pendingOpenId, onConsumedPending, onResourceE
         </p>
         <div className="rx-subtabs">
           <button className={`rx-subtab ${sub === 'discover' ? 'active' : ''}`} onClick={() => setSub('discover')}>Discover</button>
+          <button className={`rx-subtab ${sub === 'saved' ? 'active' : ''}`} onClick={() => setSub('saved')}>Saved</button>
           <button className={`rx-subtab ${sub === 'mine' ? 'active' : ''}`} onClick={() => setSub('mine')}>My resources</button>
           <button className="rx-subtab primary" onClick={() => setShowCreate(true)}>Share a resource</button>
+          <button
+            className="rx-subtab ghost rx-refresh"
+            onClick={refresh}
+            disabled={refreshing}
+            aria-label="Refresh resources"
+            title="Refresh">
+            {refreshing ? 'Refreshing…' : 'Refresh'}
+          </button>
         </div>
         {sub === 'discover' && (
           <div className="rx-search">
             <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search by tag (e.g. backprop, easy)" aria-label="Search resources by tag" />
             <select value={sort} onChange={e => setSort(e.target.value)} aria-label="Sort resources">
-              <option value="recent">Most recent</option>
+              <option value="latest">Most recent</option>
               <option value="saves">Most saved</option>
               <option value="utility">Most useful</option>
             </select>
@@ -3188,6 +3266,45 @@ function ResourcesPanel({ student, pendingOpenId, onConsumedPending, onResourceE
         )}
         {error && <p className="error">{error}</p>}
       </section>
+
+      {/* Tier 11 — cohort pulse strip. Three text-only tiles. Monochrome:
+          numbers + label, no coloured dots or pills (per design directive). */}
+      {pulse && (
+        <section className="panel rx-pulse" aria-label="Cohort activity">
+          <div className="rx-pulse-tile">
+            <strong>{stats.totalResources}</strong>
+            <span>resources in cohort</span>
+          </div>
+          <div className="rx-pulse-tile">
+            <strong>{stats.totalSaves}</strong>
+            <span>total saves</span>
+          </div>
+          <div className="rx-pulse-tile">
+            <strong>{stats.totalRaters}</strong>
+            <span>students rating</span>
+          </div>
+        </section>
+      )}
+
+      {/* Tier 11 — popular tags as quick-fill chips. Click sets q to that
+          tag, which triggers a fetch with ?q=… rebuilt client-side. Tags
+          come from the server, sorted by usage desc. */}
+      {pulse && Array.isArray(stats.topTags) && stats.topTags.length > 0 && (
+        <section className="rx-tags" aria-label="Popular tags">
+          <span className="muted rx-tags-label">Popular tags</span>
+          {stats.topTags.map(t => (
+            <button
+              key={t.tag}
+              type="button"
+              className={`rx-tag ${q === t.tag ? 'active' : ''}`}
+              onClick={() => setQ(q === t.tag ? '' : t.tag)}
+              aria-label={`Filter by tag ${t.tag}`}>
+              {t.tag}
+              <em>{t.count}</em>
+            </button>
+          ))}
+        </section>
+      )}
 
       {sub === 'mine' && mine && (
         <section className="panel rx-impact">
@@ -3202,33 +3319,47 @@ function ResourcesPanel({ student, pendingOpenId, onConsumedPending, onResourceE
       )}
 
       {rows == null ? (
-        <section className="panel"><p className="muted">Loading resources…</p></section>
-      ) : rows.length === 0 ? (
-        <section className="panel empty">
-          <p className="muted">
-            {sub === 'mine'
-              ? "You haven't shared anything yet. Try Share a resource to start."
-              : q
-                ? `Nothing in your cohort matches "${q}". Try a broader tag, or share the first one yourself.`
-                : 'No resources in your cohort yet. Be the first to share.'}
-          </p>
+        <section className="panel rx-skeleton" aria-hidden="true">
+          {[0, 1, 2].map(i => (
+            <div key={i} className="card rx-card rx-skel" />
+          ))}
         </section>
+      ) : rows.length === 0 ? (
+        sub === 'discover' && !q ? (
+          <section className="panel empty rx-empty-cta">
+            <p className="rx-empty-title">No resources shared in your cohort yet.</p>
+            <p className="muted">Be the first. Share something useful and the cohort will see it instantly.</p>
+            <button className="primary rx-empty-btn" onClick={() => setShowCreate(true)}>Share the first resource</button>
+          </section>
+        ) : (
+          <section className="panel empty">
+            <p className="muted">
+              {sub === 'saved'
+                ? 'Nothing saved yet. Tap Save on a resource to keep it here.'
+                : sub === 'mine'
+                  ? "You haven't shared anything yet. Try Share a resource to start."
+                  : q
+                    ? `Nothing in your cohort matches "${q}". Try a broader tag, or share the first one yourself.`
+                    : 'No resources in your cohort yet. Be the first to share.'}
+            </p>
+          </section>
+        )
       ) : (
         <div className="cards rx-list">
           {rows.map(r => (
-            <ResourceCard key={r._id} r={r} onOpen={() => setOpenRes(r)} email={email} onChanged={load} />
+            <ResourceCard key={r._id} r={r} onOpen={() => setOpenRes(r)} email={email} onChanged={refresh} />
           ))}
         </div>
       )}
 
       {openRes && (
         <ResourceSheet resource={openRes} email={email}
-          onClose={() => setOpenRes(null)} onChanged={() => { load(); setOpenRes(null); }} />
+          onClose={() => setOpenRes(null)} onChanged={() => { refresh(); setOpenRes(null); }} />
       )}
       {showCreate && (
         <CreateResourceSheet email={email}
           onClose={() => setShowCreate(false)}
-          onCreated={() => { setShowCreate(false); load(); }} />
+          onCreated={() => { setShowCreate(false); refresh(); }} />
       )}
     </div>
   );
